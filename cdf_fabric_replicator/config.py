@@ -12,6 +12,11 @@ class ExtractorConfig:
     fabric_ingest_batch_size: int = 1_000
     poll_time: int = 3600
 
+@dataclass
+class ExtractorPipelineConfig:
+    external_id: str
+    config_file_path : str
+
 
 @dataclass
 class SubscriptionsConfig:
@@ -19,6 +24,8 @@ class SubscriptionsConfig:
     partitions: List[int]
     lakehouse_abfss_path_dps: str
     lakehouse_abfss_path_ts: str
+    s3_delta_lake_path_dps: str
+    s3_delta_lake_path_ts: str
 
 
 @dataclass
@@ -28,6 +35,7 @@ class DataModelingConfig:
 
 @dataclass
 class EventConfig:
+    s3_delta_lake_path_events: str
     lakehouse_abfss_path_events: str
     batch_size: int = 1000
 
@@ -49,7 +57,7 @@ class RawConfigSource:
 
 @dataclass
 class SourceConfig:
-    abfss_prefix: str
+    s3_prefix: str
     data_set_id: str
     event_path: Optional[str] = None
     event_path_incremental_field: Optional[str] = None
@@ -81,3 +89,4 @@ class Config(BaseConfig):
     data_modeling: Optional[List[DataModelingConfig]]
     event: Optional[EventConfig]
     raw_tables: Optional[List[RawConfigSource]]
+    extractor_pipeline: Optional[ExtractorPipelineConfig]

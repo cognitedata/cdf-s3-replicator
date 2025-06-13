@@ -5,6 +5,7 @@ from cognite.extractorutils.base import CancellationToken
 
 from cognite.extractorutils.metrics import safe_get
 
+from cdf_fabric_replicator.extractor_config import CdfExtractorConfig
 from cdf_fabric_replicator.time_series import TimeSeriesReplicator
 from cdf_fabric_replicator.data_modeling import DataModelingReplicator
 from cdf_fabric_replicator.extractor import CdfFabricExtractor
@@ -16,8 +17,7 @@ from cdf_fabric_replicator.log_config import LOGGING_CONFIG
 
 
 def main() -> None:
-    logging.config.dictConfig(LOGGING_CONFIG)
-    logging.info("Starting CDF Fabric Replicator")
+    logging.info("Starting CDF S3 Replicator")
     stop_event = CancellationToken()
     worker_list = []
 
@@ -25,6 +25,18 @@ def main() -> None:
         metrics=safe_get(Metrics), stop_event=stop_event
     ) as dm_replicator:
         worker_list.append(threading.Thread(target=dm_replicator.run))
+
+    with EventsReplicator(
+        metrics=safe_get(Metrics), stop_event=stop_event) as events_replicator:
+        worker_list.append(threading.Thread(target=events_replicator.run))
+
+    with TimeSeriesReplicator(
+        metrics=safe_get(Metrics), stop_event=stop_event
+    ) as ts_replicator:
+        worker_list.append(threading.Thread(target=ts_replicator.run))
+
+    with CdfExtractorConfig(metrics=safe_get(Metrics), override_config_path="config_examples/example_config.yaml") as extractor_config:
+        extractor_config.run()
 
     for worker in worker_list:
         worker.start()

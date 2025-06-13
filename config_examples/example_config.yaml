@@ -24,9 +24,15 @@ extractor:
   ingest-batch-size:       100000
   poll-time:               5
 
+extractor-pipeline:
+  external_id: IndustrialCanvasInstanceSpace
+  config_file_path: /Users/dev/replicator/config_examples/example_config.yaml
+
+
 
 data_modeling:
-  - space: IndustrialCanvasInstanceSpace
+#  - space: test_mock_dm
+   - space: IndustrialCanvasInstanceSpace
 
 destination:
   s3:
