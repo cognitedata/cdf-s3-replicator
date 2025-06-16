@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
-
-from cognite.extractorutils import Extractor
+import cognite.extractorutils
+# from cognite.extractorutils import Extractor
 from cognite.extractorutils.base import CancellationToken
 from typing import Optional
 from cognite.client.data_classes import ExtractionPipelineConfigWrite
@@ -14,7 +14,7 @@ from cdf_fabric_replicator.metrics import Metrics
 
 
 
-class CdfExtractorConfig(Extractor[Config]):
+class CdfExtractorConfig(cognite.extractorutils.Extractor[Config]):
     def __init__(
         self,
         metrics: Metrics,
@@ -49,8 +49,8 @@ class CdfExtractorConfig(Extractor[Config]):
         self.logger.debug(f"Set external_id: {self.external_id}")
         self.logger.debug(f"Config file path: {self.config_file_path}")
         config_yaml_as_str = self.read_yaml_as_string(self.config_file_path)
-        self.logger.debug(f"Read YAML config as string.{type(config_yaml_as_str)}")
-        self.write_extraction_pipeline_config(self, config_yaml_as_str)
+        self.logger.debug(f"Read YAML config as string.{type(config_yaml_as_str)} : {config_yaml_as_str}")
+        self.write_extraction_pipeline_config(config_yaml_as_str)
         self.logger.debug("Extraction pipeline config written.")
 
 
@@ -61,7 +61,7 @@ class CdfExtractorConfig(Extractor[Config]):
         try:
             with open(yaml_path, 'r') as file:
                 data = yaml.safe_load(file)
-            self.logger.debug("YAML file loaded successfully.")
+            self.logger.info("YAML file loaded successfully.")
             yaml_data = yaml.dump(data)
         except FileNotFoundError:
             self.logger.error(f"Config YAML file not found: {yaml_path}")
@@ -69,24 +69,23 @@ class CdfExtractorConfig(Extractor[Config]):
         except Exception as e:
             self.logger.error(f"Error reading YAML file: {e}")
             raise
-        return yaml_data
+        return str(yaml_data)
 
 
 
-    def write_extraction_pipeline_config(self, config_yaml_as_str, str1):
+    def write_extraction_pipeline_config(self, config_yaml_as_str):
         self.logger.debug("Writing extraction pipeline config to Cognite Data Fusion.")
-        self.logger.debug(f"Config File as String {type(str1)} value: {str1}")
+        self.logger.debug(f"Config File as String {type(config_yaml_as_str)} value: {config_yaml_as_str}")
         try:
-            self.cognite_client.extraction_pipelines.config.create(ExtractionPipelineConfigWrite(self.external_id, config=str1))
+            self.cognite_client.extraction_pipelines.config.create(ExtractionPipelineConfigWrite(self.external_id, config=config_yaml_as_str))
             self.logger.debug("Extraction pipeline config created successfully.")
         except Exception as exception:
             self.logger.error(f"Failed to write extraction pipeline config: {exception}")
             raise
         return
 
-''' Local testing code given below, uncomment to run locally
+# Local testing code given below, uncomment to run locally
 print("CdfExtractorConfig initialized successfully.")
 with CdfExtractorConfig(metrics=safe_get(Metrics), override_config_path="config_examples/example_config.yaml") as extractor_config:
     extractor_config.run()
 
-'''
