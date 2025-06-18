@@ -115,12 +115,12 @@ class DataModelingReplicator(Extractor):
         Determines the correct query and delegates processing to `_iterate_and_write`.
         """
         query = (
-            self._q_for_view(view) if view else self._q_for_edge()
+            self._query_for_view(view) if view else self._query_for_edges()
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
     @staticmethod
-    def _q_for_view(view: Dict[str, Any]) -> Query:
+    def _query_for_view(view: Dict[str, Any]) -> Query:
         """
         Constructs a query for a node or edge view based on the view metadata.
         Returns a node query unless the view is of type 'edge'.
@@ -151,7 +151,7 @@ class DataModelingReplicator(Extractor):
         )
 
     @staticmethod
-    def _q_for_edge() -> Query:
+    def _query_for_edges() -> Query:
         """
         Constructs a query for all edge instances with no filters.
         Typically used to retrieve all edges in a space.
