@@ -16,6 +16,8 @@ class ExtractorConfig:
 class ExtractorPipelineConfig:
     external_id: str
     config_file_path : str
+    dataset_external_id: str
+    dataset_name: str
 
 
 @dataclass
@@ -36,9 +38,12 @@ class DataModelingConfig:
 @dataclass
 class EventConfig:
     s3_delta_lake_path_events: str
-    lakehouse_abfss_path_events: str
     batch_size: int = 1000
 
+@dataclass
+class AssetConfig:
+    s3_delta_lake_assets: str
+    batch_size: int = 1000
 
 @dataclass
 class RawConfig:
@@ -90,3 +95,4 @@ class Config(BaseConfig):
     event: Optional[EventConfig]
     raw_tables: Optional[List[RawConfigSource]]
     extractor_pipeline: Optional[ExtractorPipelineConfig]
+    asset: Optional[AssetConfig]

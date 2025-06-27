@@ -1,6 +1,7 @@
+
 logger:
   console:
-    level: INFO
+    level: DEBUG
 
 cognite:
   host:    ${COGNITE_BASE_URL}
@@ -13,7 +14,8 @@ cognite:
     scopes:
       - ${COGNITE_BASE_URL}/.default
   extraction-pipeline:
-    external-id: ${COGNITE_EXTRACTION_PIPELINE}
+    external_id: ${COGNITE_EXTRACTION_PIPELINE}
+
 
 extractor:
   state-store:
@@ -27,8 +29,15 @@ extractor:
 extractor-pipeline:
   external_id: IndustrialCanvasInstanceSpace
   config_file_path: /Users/dev/replicator/config_examples/example_config.yaml
+  dataset_external_id: ${COGNITE_DATASET_EXTERNAL_ID}
+  dataset_name: ${COGNITE_DATASET_NAME}
+
+event:
+  s3-delta-lake-path-events: ${AWS_S3_BUCKET_PATH_FOR_EVENTS }
 
 
+asset:
+  s3_delta_lake_assets:  ${AWS_S3_BUCKET_PATH_FOR_ASSETS }
 
 data_modeling:
 #  - space: test_mock_dm
