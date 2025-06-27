@@ -22,7 +22,8 @@ extractor:
       table:    ${COGNITE_STATE_TABLE}
   subscription-batch-size: 10000
   ingest-batch-size:       100000
-  poll-time:               5
+  poll-time:               900
+  snapshot-interval: 900
 
 
 data_modeling:
