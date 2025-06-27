@@ -22,8 +22,16 @@ class SubscriptionsConfig:
 
 
 @dataclass
+class DMModel:
+    external_id: str
+    views: list[str] | None = None
+
+
+@dataclass
 class DataModelingConfig:
     space: str
+    views: list[str] | None = None
+    data_models: list["DMModel"] | None = None
 
 
 @dataclass

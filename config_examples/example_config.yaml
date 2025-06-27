@@ -26,7 +26,10 @@ extractor:
 
 
 data_modeling:
-  - space: IndustrialCanvasInstanceSpace
+  - space: dm-space-example
+    data_models:
+      - external_id: dm-external-id
+        views: [view-external-id]
 
 destination:
   s3:
