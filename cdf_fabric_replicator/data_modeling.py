@@ -349,66 +349,6 @@ class DataModelingReplicator(Extractor):
         self.logger.info("Snapshot publish complete: %d/%d views successful", success_count, len(view_map))
 
 
-    def _delete_s3_prefix(self, uri: str) -> None:
-        """Delete *all* S3 objects under the given s3:// URI prefix."""
-        self._ensure_s3()
-        bucket, prefix = uri[5:].split("/", 1)
-        if prefix.startswith("/"):
-            prefix = prefix[1:]
-        paginator = self._s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            objs = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-            if objs:
-                self._s3.delete_objects(Bucket=bucket, Delete={"Objects": objs})
-
-
-    def _write_snapshot(
-            self,
-            dm_space: str,
-            ext_id: str,
-            version: Optional[int],
-            is_edge: bool,
-    ) -> None:
-        """
-        Writes a snapshot Parquet file for a given view or edge set.
-        Reads the Delta table, deduplicates nodes, and writes to S3.
-        Return 's3://bucket/prefix/raw/<space>' (no '/views').
-        """
-        raw_uri = (
-            f"{self._raw_prefix(dm_space)}/views/_edges"
-            if is_edge
-            else f"{self._raw_prefix(dm_space)}/views/{ext_id}"
-        )
-
-        pub_uri = (
-            f"{self._publish_prefix(dm_space)}/edges/"
-            if is_edge
-            else f"{self._publish_prefix(dm_space)}/{ext_id}/"
-        )
-
-        try:
-            dt = DeltaTable(raw_uri)
-            tbl = dt.to_pyarrow_table()
-        except (FileNotFoundError, DeltaError) as exc:
-            self.logger.warning("No data yet for %s — skipping. (%s)", raw_uri, exc)
-            return
-
-        if not is_edge and tbl.num_rows:
-            df_nodes = (
-                tbl.to_pandas()
-                .sort_values("lastUpdatedTime", ascending=False)
-                .drop_duplicates(
-                    subset=["space", "externalId", "instanceType"], keep="first"
-                )
-            )
-
-            tbl = pa.Table.from_pandas(df_nodes, preserve_index=False)
-
-        self._delete_s3_prefix(pub_uri)
-
-        pq.write_table(tbl, f"{pub_uri}part-00000.parquet", compression="snappy")
-
-
     def _write_view_snapshot(self, dm_space: str, view_xid: str, is_edge_only: bool) -> None:
         """
         Tableau-optimized stable filenames with atomic replacement.
