@@ -11,6 +11,7 @@ class ExtractorConfig:
     ingest_batch_size: int = 100_000
     fabric_ingest_batch_size: int = 1_000
     poll_time: int = 3600
+    snapshot_interval: int = 900
 
 
 @dataclass
@@ -22,8 +23,16 @@ class SubscriptionsConfig:
 
 
 @dataclass
+class DMModel:
+    external_id: str
+    views: list[str] | None = None
+
+
+@dataclass
 class DataModelingConfig:
     space: str
+    views: list[str] | None = None
+    data_models: list["DMModel"] | None = None
 
 
 @dataclass
