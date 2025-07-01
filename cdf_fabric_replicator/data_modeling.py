@@ -403,9 +403,6 @@ class DataModelingReplicator(Extractor):
 
                     if node_tbl.num_rows > 0:
                         if node_tbl.num_rows > self.LARGE_TABLE_THRESHOLD:
-                            self.logger.info(
-                                f"Processing large dataset with {node_tbl.num_rows} rows using memory-efficient approach"
-                            )
                             df = node_tbl.to_pandas(split_blocks=True, self_destruct=True)
                         else:
                             df = node_tbl.to_pandas()
