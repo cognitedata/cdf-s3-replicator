@@ -61,7 +61,13 @@ class DataModelingReplicator(Extractor):
 
 
     def _ensure_s3(self):
+        """Adds S3 client if not already initialized."""
         if self._s3 is None:
+            required_vars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION']
+            missing = [var for var in required_vars if not os.getenv(var)]
+            if missing:
+                raise RuntimeError(f"Missing required environment variables: {missing}")
+
             self._s3 = boto3.client(
                 "s3",
                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -182,6 +188,7 @@ class DataModelingReplicator(Extractor):
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
+
     def _node_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
@@ -196,6 +203,7 @@ class DataModelingReplicator(Extractor):
                 "nodes": Select([SourceSelector(vid, props)])
             },
         )
+
 
     def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid, props = (
@@ -299,6 +307,7 @@ class DataModelingReplicator(Extractor):
         prefix = (prefix + '/') if prefix else ''
         return f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}"
 
+
     def _publish_prefix(self, dm_space: str) -> str:
         """
         Returns the S3 URI prefix for published snapshot data in the given space.
@@ -307,6 +316,7 @@ class DataModelingReplicator(Extractor):
         prefix = self.s3_cfg.prefix.rstrip('/')
         prefix = (prefix + '/') if prefix else ''
         return f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}"
+
 
     def _current_views_map(self, dm_space: str, selected: set[str] | None = None,
     ) -> Dict[str, Dict[str, Union[int, bool]]]:
@@ -354,6 +364,7 @@ class DataModelingReplicator(Extractor):
         Tableau-optimized stable filenames with atomic replacement.
         Always writes to: nodes.parquet and edges.parquet (never deletes directory).
         Uses temporary files to ensure Tableau never sees partial/missing data.
+        Memory-efficient processing for large datasets.
         """
         pub_dir = f"{self._publish_prefix(dm_space)}/{view_xid}/"
         temp_suffix = f"_temp_{uuid.uuid4().hex[:8]}"
@@ -479,6 +490,7 @@ class DataModelingReplicator(Extractor):
         except Exception as e:
             self.logger.warning("Failed to cleanup temp files: %s", e)
 
+
     def _create_empty_edges_table(self) -> pa.Table:
         """
         Create an empty edges table with the correct schema for Tableau consistency.
@@ -499,6 +511,7 @@ class DataModelingReplicator(Extractor):
             ("direction", pa.string()),
         ])
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
+
 
     def _create_empty_nodes_table(self) -> pa.Table:
         """
