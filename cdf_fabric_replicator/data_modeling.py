@@ -58,7 +58,7 @@ class DataModelingReplicator(Extractor):
         self.base_dir.mkdir(parents=True, exist_ok=True)
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         self._s3 = None
-
+        self.LARGE_TABLE_THRESHOLD = 1_000_000  # Threshold for large views to optimize memory usage
 
     def _ensure_s3(self):
         """Adds S3 client if not already initialized."""
@@ -364,7 +364,7 @@ class DataModelingReplicator(Extractor):
         Tableau-optimized stable filenames with atomic replacement.
         Always writes to: nodes.parquet and edges.parquet (never deletes directory).
         Uses temporary files to ensure Tableau never sees partial/missing data.
-        Memory-efficient processing for large datasets.
+        Memory-efficient processing for large views.
         """
         pub_dir = f"{self._publish_prefix(dm_space)}/{view_xid}/"
         temp_suffix = f"_temp_{uuid.uuid4().hex[:8]}"
@@ -402,12 +402,21 @@ class DataModelingReplicator(Extractor):
                     node_tbl = DeltaTable(node_raw).to_pyarrow_table()
 
                     if node_tbl.num_rows > 0:
+                        if node_tbl.num_rows > self.LARGE_TABLE_THRESHOLD:
+                            self.logger.info(
+                                f"Processing large dataset with {node_tbl.num_rows} rows using memory-efficient approach"
+                            )
+                            df = node_tbl.to_pandas(split_blocks=True, self_destruct=True)
+                        else:
+                            df = node_tbl.to_pandas()
+
                         df = (
-                            node_tbl.to_pandas()
-                            .sort_values("lastUpdatedTime", ascending=False)
+                            df.sort_values("lastUpdatedTime", ascending=False)
                             .drop_duplicates(["space", "externalId"], keep="first")
                         )
                         node_tbl = pa.Table.from_pandas(df, preserve_index=False)
+
+                        del df
 
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
