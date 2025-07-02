@@ -27,10 +27,17 @@ extractor:
 
 
 data_modeling:
-  - space: dm-space-example
+  - space: dm-space-example1
     data_models:
-      - external_id: dm-external-id
-        views: [view-external-id]
+      - external_id: dm-external-id1
+        views: [view-external-id1, view-external-id2]
+      - external_id: dm-external-id2
+        views: [view-external-id1]
+
+  - space: dm-space-example2
+    data_models:
+      - external_id: dm-external-id1
+        views: [view-external-id1]
 
 destination:
   s3:
