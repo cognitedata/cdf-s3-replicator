@@ -35,7 +35,6 @@ class CdfExtractorConfig(Extractor[Config]):
             self.client = None
             self.metrics = metrics
             self.stop_event = stop_event
-
             # Only use override_config_path if provided, else fallback to default
             if override_config_path:
                 self.config_file_path = Path(override_config_path)
@@ -93,6 +92,8 @@ class CdfExtractorConfig(Extractor[Config]):
     def retrieve_pipeline_config(self):
         config_data = self.client.extraction_pipelines.config.retrieve(external_id=self.extraction_pipeline.external_id )
         self.logger.debug(f"config_data retrieved: {yaml.dump(config_data)}")
+        config_obj = yaml.safe_load(config_data)
+        return config_obj
 
 
 print("CdfExtractorConfig initialized successfully.")
