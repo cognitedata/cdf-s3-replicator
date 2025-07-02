@@ -92,7 +92,12 @@ class CdfExtractorConfig(Extractor[Config]):
     def retrieve_pipeline_config(self):
         config_data = self.client.extraction_pipelines.config.retrieve(external_id=self.extraction_pipeline.external_id )
         self.logger.debug(f"config_data retrieved: {yaml.dump(config_data)}")
-        config_obj = yaml.safe_load(config_data)
+        try:
+            with open(self.config_file_path, 'r') as file:
+                config_obj = yaml.safe_load(file)
+        except Exception as e:
+            self.logger.error(f"Error reading YAML file: {e}")
+            raise
         return config_obj
 
 
