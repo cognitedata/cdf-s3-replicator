@@ -7,7 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any, Dict, List, Optional, Union
 import pyarrow as pa
-from cognite.client.data_classes.data_modeling.ids import ViewId
+from cognite.client.data_classes.data_modeling.ids import ViewId, ContainerId
 from cognite.client.data_classes.data_modeling.query import (
     EdgeResultSetExpression,
     NodeResultSetExpression,
@@ -16,7 +16,7 @@ from cognite.client.data_classes.data_modeling.query import (
     Select,
     SourceSelector,
 )
-from cognite.client.data_classes.filters import Equals, HasData
+from cognite.client.data_classes.filters import Equals, HasData, Or
 from cognite.client.exceptions import CogniteAPIError
 from cognite.extractorutils.base import CancellationToken, Extractor
 from deltalake import DeltaTable, write_deltalake
@@ -52,8 +52,10 @@ class DataModelingReplicator(Extractor):
         )
         self.stop_event = stop_event
         self.logger = logging.getLogger(self.name)
-
+        logging.getLogger("botocore").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
         self.s3_cfg = None
+        self._model_xid: str | None = None
         self.base_dir: Path = Path.cwd() / "deltalake"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
@@ -112,56 +114,67 @@ class DataModelingReplicator(Extractor):
 
             delay = max(self.config.extractor.poll_time - (time.time() - t0), 0)
             if delay:
+                self.logger.info(
+                    "Cycle finished in %.1fs – sleeping %ds",
+                    time.time() - t0,
+                    int(delay),
+                )
                 self.stop_event.wait(delay)
 
 
-    def _selected_views(self, dm_cfg: DataModelingConfig) -> set[str] | None:
-        """
-        • None    → replicate every view in the space  (default)
-        • set()   → replicate nothing (user passed an explicit empty list)
-        • set{…}  → replicate exactly those externalIds
-        """
-        if dm_cfg.views is not None:
-            return set(dm_cfg.views)
-
-        if dm_cfg.data_models:
-            wanted: set[str] = set()
-            for m in dm_cfg.data_models:
-                if m.views is None:
-                    mdl = self.cognite_client.data_modeling.data_models.retrieve(
-                        space=dm_cfg.space, external_id=m.external_id
-                    )
-                    wanted.update(v.view_id.external_id for v in mdl.views)
-                else:
-                    wanted.update(m.views)
-            return wanted
-
-        return None
-
     def process_spaces(self) -> None:
-        """Iterate spaces and enqueue just the views we want."""
-        for dm_cfg in self.config.data_modeling:
-            wanted = self._selected_views(dm_cfg)
+        """
+        Replicate the views configured in `config.yaml`, writing them under
 
+            raw/<space>/<model-xid>/views/…
+            publish/<space>/<model-xid>/…
+
+        If the DataModelingConfig contains `data_models:` we set
+        `self._model_xid` to the model’s external-id while processing its views.
+        For a plain `views:` list (or “all views”) we fall back to "default".
+        """
+        for dm_cfg in self.config.data_modeling:
             try:
-                views = self.cognite_client.data_modeling.views.list(
-                    space=dm_cfg.space, limit=-1
+                space_views = self.cognite_client.data_modeling.views.list(
+                    space=dm_cfg.space, limit=-1, all_versions=False
                 )
             except CogniteAPIError as err:
                 self.logger.error("View-list failed for %s: %s", dm_cfg.space, err)
                 continue
 
-            if wanted is not None:
-                views = [v for v in views if v.external_id in wanted]
-                if not views and wanted:
-                    missing = wanted.difference({v.external_id for v in views})
-                    self.logger.warning(
-                        "Requested view(s) %s not found in space '%s'",
-                        ", ".join(sorted(missing)), dm_cfg.space
-                    )
+            by_id = {v.external_id: v for v in space_views}
 
-            for v in views:
-                self.replicate_view(dm_cfg, v.dump())
+            if dm_cfg.data_models:
+                for model in dm_cfg.data_models:
+                    self._model_xid = model.external_id
+                    wanted = set(model.views) if model.views else None
+
+                    selected = [
+                        v for v in space_views
+                        if wanted is None or v.external_id in wanted
+                    ]
+
+                    if not selected:
+                        self.logger.warning(
+                            "No matching views %s found for model %s in space %s",
+                            ", ".join(sorted(wanted)) if wanted else "<all>",
+                            model.external_id,
+                            dm_cfg.space,
+                        )
+                        continue
+
+                    for view in selected:
+                        try:
+                            self.replicate_view(dm_cfg, view.dump())
+                        except Exception as exc:
+                            self.logger.error(
+                                "Replicating %s.%s failed: %s",
+                                dm_cfg.space, view.external_id, exc,
+                            )
+
+                self._model_xid = None
+                continue
+
 
     def replicate_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> None:
         """Two separate syncs to keep each query small."""
@@ -183,36 +196,46 @@ class DataModelingReplicator(Extractor):
 
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
         query = (
-            self._edge_query_for_view(view) if kind == "edges"
-            else self._node_query_for_view(view)
+            self._edge_query_for_view(dm_cfg, view) if kind == "edges"
+            else self._node_query_for_view(dm_cfg, view)
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
 
-    def _node_query_for_view(self, view: dict[str, Any]) -> Query:
+    def _node_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
+        """Fixed version that matches the working code pattern"""
+        vid = ViewId(view["space"], view["externalId"], view["version"])
+        props = list(view["properties"])
+        container_pred = HasData(
+            containers=[ContainerId(dm_cfg.space, view["externalId"])]
+        )
+        view_pred = HasData(views=[ViewId(view["space"],
+                                          view["externalId"],
+                                          view["version"])])
+
+        node_filter = Or(container_pred, view_pred)
+        with_ = {
+            "nodes": NodeResultSetExpression(filter=node_filter, limit=2000)
+        }
+        select = {
+            "nodes": Select([SourceSelector(vid, list(view["properties"]))])
+        }
+        return Query(with_=with_, select=select)
+
+
+    def _edge_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
 
-        return Query(
-            with_={
-                "nodes": NodeResultSetExpression(
-                    filter=HasData(views=[vid]), limit=2000
-                )
-            },
-            select={
-                "nodes": Select([SourceSelector(vid, props)])
-            },
-        )
-
-
-    def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
-        vid, props = (
-            ViewId(view["space"], view["externalId"], view["version"]),
-            list(view["properties"]),
-        )
-
         if view.get("usedFor") != "edge":
-            anchor = NodeResultSetExpression(filter=HasData(views=[vid]), limit=2000)
+            container_pred = HasData(
+                containers=[ContainerId(dm_cfg.space, view["externalId"])]
+            )
+            view_pred = HasData(views=[vid])
+            node_filter = Or(container_pred, view_pred)
+
+            anchor = NodeResultSetExpression(filter=node_filter, limit=2000)
+
             return Query(
                 with_={
                     "nodes": anchor,
@@ -232,10 +255,8 @@ class DataModelingReplicator(Extractor):
         return Query(
             with_={
                 "edges": EdgeResultSetExpression(
-                    filter=Equals(
-                        ["edge", "type"],
-                        {"space": vid.space, "externalId": vid.external_id},
-                    ),
+                    filter=Equals(["edge", "type"],
+                                  {"space": vid.space, "externalId": vid.external_id}),
                     limit=2000,
                 )
             },
@@ -252,70 +273,83 @@ class DataModelingReplicator(Extractor):
 
 
     def _iterate_and_write(self, dm_cfg: DataModelingConfig, state_id: str, query: Query) -> None:
-        """
-        Executes a paginated query and writes results to local Delta tables and S3.
-        Maintains cursor state and handles failures gracefully with retry logic.
-        """
+        """Enhanced version with include_typing=False like the working code"""
         cursors = self.state_store.get_state(external_id=state_id)[1]
+
         if cursors:
             query.cursors = json.loads(str(cursors))
 
         try:
-            res = self.cognite_client.data_modeling.instances.sync(query=query)
-        except CogniteAPIError:
+            res = self.cognite_client.data_modeling.instances.sync(
+                query=query,
+                include_typing=False
+            )
+        except CogniteAPIError as e:
+            self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with null cursors...")
             query.cursors = None
             try:
-                res = self.cognite_client.data_modeling.instances.sync(query=query)
+                res = self.cognite_client.data_modeling.instances.sync(
+                    query=query,
+                    include_typing=False
+                )
             except CogniteAPIError as e:
-                self.logger.error(f"Failed to sync instances. Error: {e}")
+                self.logger.error(f"Retry sync also failed for {state_id}: {e}")
                 raise e
 
         query_start_ms = int(time.time() * 1000)
         self._send_to_s3(data_model_config=dm_cfg, result=res)
 
+        page_count = 1
         while any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in")):
             if self._page_contains_future_change(res, query_start_ms):
                 self.logger.info(
-                    "Short-circuiting %s – instance updated after paging started; will continue next poll.",
-                    state_id,
+                    f"Short-circuiting {state_id} on page {page_count} – instance updated after paging started"
                 )
                 break
 
             query.cursors = res.cursors
             try:
-                res = self.cognite_client.data_modeling.instances.sync(query=query)
-            except CogniteAPIError:
+                res = self.cognite_client.data_modeling.instances.sync(
+                    query=query,
+                    include_typing=False
+                )
+                page_count += 1
+            except CogniteAPIError as e:
+                self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Retrying...")
                 query.cursors = None
                 try:
-                    res = self.cognite_client.data_modeling.instances.sync(query=query)
+                    res = self.cognite_client.data_modeling.instances.sync(
+                        query=query,
+                        include_typing=False
+                    )
                 except CogniteAPIError as e:
-                    self.logger.error(f"Failed to sync instances. Error: {e}")
+                    self.logger.error(f"Page {page_count} retry failed for {state_id}: {e}")
                     raise e
 
             self._send_to_s3(data_model_config=dm_cfg, result=res)
 
-        self.state_store.set_state(external_id=state_id, high=json.dumps(query.cursors))
+        final_cursors = query.cursors
+
+        self.state_store.set_state(external_id=state_id, high=json.dumps(final_cursors))
         self.state_store.synchronize()
 
 
     def _raw_prefix(self, dm_space: str) -> str:
         """
-        Returns the S3 URI prefix for raw data in the given data modeling space.
-        Example: s3://bucket/prefix/raw/<space>
+        s3://<bucket>/<prefix>/raw/<space>/<model? or default>/views
         """
-        prefix = self.s3_cfg.prefix.rstrip('/')
-        prefix = (prefix + '/') if prefix else ''
-        return f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}"
+        model = self._model_xid or "default"
+        prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
+        return f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}/{model}"
 
 
     def _publish_prefix(self, dm_space: str) -> str:
         """
-        Returns the S3 URI prefix for published snapshot data in the given space.
-        Example: s3://bucket/prefix/publish/<space>
+        s3://<bucket>/<prefix>/publish/<space>/<model? or default>
         """
-        prefix = self.s3_cfg.prefix.rstrip('/')
-        prefix = (prefix + '/') if prefix else ''
-        return f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}"
+        model = self._model_xid or "default"
+        prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
+        return f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}/{model}"
 
 
     def _current_views_map(self, dm_space: str, selected: set[str] | None = None,
@@ -337,27 +371,65 @@ class DataModelingReplicator(Extractor):
 
     def _publish_space_snapshots(self, dm_cfg: DataModelingConfig) -> None:
         """
-        Publishes the latest snapshot for each view and edge in a DM space.
-        Loads Delta tables and writes Parquet snapshots to S3.
-        Post-publish verification for monitoring.
+        Write Tableau-friendly snapshots under publish/<space>/<model-xid>/…
+        The same model-tagging logic as in `process_spaces()` is applied here.
         """
         dm_space = dm_cfg.space
-        wanted = self._selected_views(dm_cfg)
-        view_map = self._current_views_map(dm_space, wanted)
 
-        success_count = 0
-        for xid, meta in view_map.items():
-            is_edge_only = meta["is_edge"]
-            view_name = xid if xid != "_edges" else "edges_only"
+        if dm_cfg.data_models:
+            for model in dm_cfg.data_models:
+                self._model_xid = model.external_id
+                wanted = set(model.views) if model.views else None
+                view_map = self._current_views_map(dm_space, wanted)
 
-            try:
-                self._write_view_snapshot(dm_space, view_name, is_edge_only)
-                success_count += 1
-            except Exception as e:
-                self.logger.error("Failed to publish %s: %s", view_name, e)
+                for xid, meta in view_map.items():
+                    try:
+                        self._write_view_snapshot(
+                            dm_space, xid, meta["is_edge"]
+                        )
+                    except Exception as exc:
+                        self.logger.exception(
+                            "Snapshot publish failed for %s.%s: %s",
+                            dm_space, xid, exc,
+                        )
 
-        self.logger.info("Snapshot publish complete: %d/%d views successful", success_count, len(view_map))
+            self._model_xid = None
+            return
 
+
+    def _edge_folders_for_anchor(self, dm_space: str, anchor_xid: str) -> list[str]:
+        """
+        Return every s3://…/raw/<space>/views/<edgeView>/edges folder that
+        (heuristically) belongs to the anchor node view *anchor_xid*.
+
+        • The anchor's own   <anchor_xid>/edges
+        • Anything that starts with   <anchor_xid>.*
+        """
+        self._ensure_s3()
+        prefix = f"{self._raw_prefix(dm_space)}/views/"
+        bucket, key_prefix = prefix[5:].split("/", 1)
+
+        resp = self._s3.list_objects_v2(
+            Bucket=bucket, Prefix=key_prefix, Delimiter="/"
+        )
+
+        folders = [
+            cp["Prefix"][len(key_prefix):-1]
+            for cp in resp.get("CommonPrefixes", [])
+            if cp["Prefix"].endswith("/edges/")
+        ]
+
+        edge_view_folders = [
+            f"{prefix}{f}"
+            for f in folders
+            if f.startswith(anchor_xid)
+        ]
+
+        anchor_edges = f"{prefix}{anchor_xid}/edges"
+        if anchor_edges not in edge_view_folders:
+            edge_view_folders.append(anchor_edges)
+
+        return edge_view_folders
 
     def _write_view_snapshot(self, dm_space: str, view_xid: str, is_edge_only: bool) -> None:
         """
@@ -371,30 +443,28 @@ class DataModelingReplicator(Extractor):
         files_to_update = []
 
         try:
-            edge_raw = (
-                f"{self._raw_prefix(dm_space)}/views/_edges"
-                if is_edge_only else
-                f"{self._raw_prefix(dm_space)}/views/{view_xid}/edges"
+            if is_edge_only:
+                edge_dirs = [f"{self._raw_prefix(dm_space)}/views/_edges"]
+            else:
+                edge_dirs = self._edge_folders_for_anchor(dm_space, view_xid)
+
+            edge_tables = []
+            for path in edge_dirs:
+                try:
+                    edge_tables.append(DeltaTable(path).to_pyarrow_table())
+                except (FileNotFoundError, DeltaError):
+                    pass
+
+            edge_tbl = (
+                pa.concat_tables(edge_tables, promote=True)
+                if edge_tables else
+                self._create_empty_edges_table()
             )
 
-            try:
-                edge_tbl = DeltaTable(edge_raw).to_pyarrow_table()
-
-                temp_edge_path = f"{pub_dir}edges{temp_suffix}.parquet"
-                final_edge_path = f"{pub_dir}edges.parquet"
-
-                pq.write_table(edge_tbl, temp_edge_path, compression="snappy")
-                files_to_update.append((temp_edge_path, final_edge_path, "edges"))
-
-            except (FileNotFoundError, DeltaError):
-                self.logger.info("No edge data for %s, creating empty edges.parquet", view_xid)
-                empty_edge_tbl = self._create_empty_edges_table()
-
-                temp_edge_path = f"{pub_dir}edges{temp_suffix}.parquet"
-                final_edge_path = f"{pub_dir}edges.parquet"
-
-                pq.write_table(empty_edge_tbl, temp_edge_path, compression="snappy")
-                files_to_update.append((temp_edge_path, final_edge_path, "edges"))
+            tmp_edge = f"{pub_dir}edges{temp_suffix}.parquet"
+            fin_edge = f"{pub_dir}edges.parquet"
+            pq.write_table(edge_tbl, tmp_edge, compression="snappy")
+            files_to_update.append((tmp_edge, fin_edge, "edges"))
 
             if not is_edge_only:
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
@@ -536,48 +606,6 @@ class DataModelingReplicator(Extractor):
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
 
 
-    def _verify_tableau_files(self, dm_space: str, view_xid: str, is_edge_only: bool) -> dict:
-        """
-        Optional: Verify that Tableau files exist and return metadata.
-        Useful for monitoring and debugging.
-        """
-        pub_dir = f"{self._publish_prefix(dm_space)}/{view_xid}/"
-        file_info = {}
-
-        self._ensure_s3()
-        bucket, prefix = pub_dir[5:].split("/", 1)
-        if prefix.startswith("/"):
-            prefix = prefix[1:]
-
-        try:
-            response = self._s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-
-            for obj in response.get('Contents', []):
-                key = obj['Key']
-                if key.endswith('.parquet'):
-                    filename = key.split('/')[-1]
-                    file_info[filename] = {
-                        'size': obj['Size'],
-                        'last_modified': obj['LastModified'],
-                        'key': key
-                    }
-
-            expected_files = ['edges.parquet']
-            if not is_edge_only:
-                expected_files.append('nodes.parquet')
-
-            missing_files = [f for f in expected_files if f not in file_info]
-            if missing_files:
-                self.logger.warning("Missing expected files for %s: %s", view_xid, missing_files)
-            else:
-                self.logger.debug("All expected Tableau files present for %s", view_xid)
-
-        except Exception as e:
-            self.logger.error("Failed to verify Tableau files for %s: %s", view_xid, e)
-
-        return file_info
-
-
     def _send_to_s3(self, data_model_config: DataModelingConfig, result: QueryResult) -> None:
         """
         Extracts instance data and appends it to the corresponding S3 Delta table.
@@ -653,11 +681,11 @@ class DataModelingReplicator(Extractor):
         return out
 
 
-    def _delta_append(self, table: str, rows: List[Dict[str, Any]], space: str) -> None:
+    def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
-           Append rows into the *RAW* Delta table on S-3:
-           s3://{bucket}/{prefix}/raw/<space>/views/<table>/…
-           """
+        Append rows to the *RAW* Delta table at
+        s3://<bucket>/<prefix>/raw/<space>/<model-xid>/views/<table>
+        """
         if rows:
             null_cols = [k for k in rows[0] if all(r.get(k) is None for r in rows)]
             if null_cols:
@@ -665,10 +693,12 @@ class DataModelingReplicator(Extractor):
                     for k in null_cols:
                         r.pop(k, None)
 
-        prefix = self.s3_cfg.prefix.rstrip('/') if self.s3_cfg.prefix else ''
-        prefix = (prefix + '/') if prefix else ''
-
-        s3_uri = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{space}/views/{table}"
+        model = self._model_xid or "default"
+        prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
+        s3_uri = (
+            f"s3://{self.s3_cfg.bucket}/"
+            f"{prefix}raw/{space}/{model}/views/{table}"
+        )
 
         try:
             write_deltalake(
@@ -682,6 +712,7 @@ class DataModelingReplicator(Extractor):
                     "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
                 },
             )
+
             tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
             if tombstones:
                 dt = DeltaTable(
@@ -692,9 +723,13 @@ class DataModelingReplicator(Extractor):
                         "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
                     },
                 )
+
                 escaped = [x.replace("'", "''") for x in tombstones]
-                predicate = f'externalId IN ({', '.join([f"'{xid}'" for xid in escaped])})'
+                escaped_list = ", ".join(f"'{xid}'" for xid in escaped)
+                predicate = f"externalId IN ({escaped_list})"
+
                 dt.delete(predicate)
+
         except DeltaError as err:
             self.logger.error("Delta write failed: %s", err)
             raise
