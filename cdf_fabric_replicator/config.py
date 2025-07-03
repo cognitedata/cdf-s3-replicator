@@ -13,6 +13,14 @@ class ExtractorConfig:
     poll_time: int = 3600
     snapshot_interval: int = 900
 
+@dataclass
+class ExtractorPipelineConfig:
+    external_id: str
+    config_file_path : str
+    dataset_external_id: str
+    dataset_name: str
+
+
 
 @dataclass
 class SubscriptionsConfig:
@@ -90,3 +98,4 @@ class Config(BaseConfig):
     data_modeling: Optional[List[DataModelingConfig]]
     event: Optional[EventConfig]
     raw_tables: Optional[List[RawConfigSource]]
+    extractor_pipeline: Optional[ExtractorPipelineConfig]
