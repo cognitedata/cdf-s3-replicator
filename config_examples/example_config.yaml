@@ -44,3 +44,8 @@ destination:
     bucket:  ${AWS_S3_BUCKET}
     prefix:  ${S3_PREFIX}
     region:  ${AWS_REGION}
+
+extractor-pipeline:
+  external_id: IndustrialCanvasInstanceSpace
+  dataset_external_id: ${COGNITE_DATASET_EXTERNAL_ID}
+  dataset_name: ${COGNITE_DATASET_NAME}
