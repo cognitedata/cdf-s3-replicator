@@ -55,8 +55,6 @@ class CdfExtractorConfig(Extractor[Config]):
         self.logger.debug(f"Extractor pipeline found in config.{self.config.extractor_pipeline.dataset_external_id}")
         self.dataset_external_id = self.config.extractor_pipeline.dataset_external_id
         self.dataset_name = self.config.extractor_pipeline.dataset_external_id
-        config_yaml_as_str = self.read_yaml_as_string(Path(self.config_file_path))
-        self.write_extraction_pipeline_config(config_yaml_as_str)
         self.logger.debug("Extraction pipeline config written.")
 
     def read_yaml_as_string(self, yaml_path: Path):
@@ -72,6 +70,38 @@ class CdfExtractorConfig(Extractor[Config]):
             self.logger.error(f"Error reading YAML file: {e}")
             raise
         return yaml.dump(data)
+
+
+    def retrieve_pipeline_config_standalone(cls, config, name: str, extraction_pipeline_external_id: str):
+        """
+        Retrieve the extraction pipeline config from Cognite Data Fusion using config object.
+
+        Args:
+            config: Config object with get_cognite_client method.
+            name: Name for the Cognite client.
+            extraction_pipeline_external_id: External ID of the extraction pipeline.
+
+        Returns:
+            The extraction pipeline config as a dict.
+        """
+        try:
+            client_external = config.get_cognite_client(name)
+            config_data = client_external.extraction_pipelines.config.retrieve(
+                external_id=extraction_pipeline_external_id
+            )
+            logging.getLogger("retrieve_pipeline_config_standalone").debug(
+                f"Config data retrieved: {yaml.dump(config_data)}"
+            )
+            config_dict_ext = yaml.safe_load(config_data)
+            config.__dict__.update(config_dict_ext)
+            return config
+        except Exception as e:
+            logging.getLogger("retrieve_pipeline_config_standalone").error(
+                f"Failed to retrieve pipeline config: {e}"
+            )
+            raise
+
+
 
     def write_extraction_pipeline_config(self, config_yaml_as_str):
         self.logger.debug("Writing extraction pipeline config to Cognite Data Fusion.")
@@ -90,15 +120,9 @@ class CdfExtractorConfig(Extractor[Config]):
 
     def retrieve_pipeline_config(self):
         config_data = self.client.extraction_pipelines.config.retrieve(external_id=self.extraction_pipeline.external_id )
-        self.logger.debug(f"config_data retrieved: {yaml.dump(config_data)}")
-        with open(self.config_file_path, 'r') as file:
-            config_obj = yaml.safe_load(file)
+        config_obj = yaml.safe_load(config_data)
         self.logger.debug(f"config_obj retrieved: {yaml.dump(config_obj)}")
         return config_obj
 
 
-print("CdfExtractorConfig initialized successfully.")
-with CdfExtractorConfig(metrics=safe_get(Metrics), override_config_path="config_examples/example_config.yaml") as extractor_config:
-    extractor_config.run()
-    # If you want to retrieve the pipeline config, uncomment the next line
-    extractor_config.retrieve_pipeline_config()
+

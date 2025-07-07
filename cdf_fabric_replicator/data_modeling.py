@@ -27,6 +27,8 @@ from cdf_fabric_replicator import __version__
 from cdf_fabric_replicator.config import Config, DataModelingConfig
 from cdf_fabric_replicator.metrics import Metrics
 
+from extractor_config import CdfExtractorConfig
+
 class DataModelingReplicator(Extractor):
     """Streams CDF Data-Modeling instances into S3-based Delta tables."""
 
@@ -96,6 +98,11 @@ class DataModelingReplicator(Extractor):
         last_snapshot_time = 0
         snapshot_interval = getattr(self.config.extractor, 'snapshot_interval', self.config.extractor.poll_time)
 
+        if self.config.extractor.extraction_pipeline is None:
+            self.logger.info("No extraction pipeline configured — exiting.")
+            return
+        self.client = self.config.get_cognite_client(self.name)
+        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self.config, self.name, self.config.extractor.extraction_pipeline)
         while not self.stop_event.is_set():
             t0 = time.time()
 

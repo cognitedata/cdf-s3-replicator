@@ -16,7 +16,6 @@ class ExtractorConfig:
 @dataclass
 class ExtractorPipelineConfig:
     external_id: str
-    config_file_path : str
     dataset_external_id: str
     dataset_name: str
 
