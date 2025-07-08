@@ -85,7 +85,7 @@ class CdfExtractorConfig(Extractor[Config]):
             The extraction pipeline config as a dict.
         """
         try:
-            client_external = config.get_cognite_client(name)
+            client_external = config.cognite.get_cognite_client(name)
             config_data = client_external.extraction_pipelines.config.retrieve(
                 external_id=extraction_pipeline_external_id
             )

@@ -98,11 +98,11 @@ class DataModelingReplicator(Extractor):
         last_snapshot_time = 0
         snapshot_interval = getattr(self.config.extractor, 'snapshot_interval', self.config.extractor.poll_time)
 
-        if self.config.extractor.extraction_pipeline is None:
+        if self.config.cognite.extraction_pipeline is None:
             self.logger.info("No extraction pipeline configured — exiting.")
             return
-        self.client = self.config.get_cognite_client(self.name)
-        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self.config, self.name, self.config.extractor.extraction_pipeline)
+        self.client = self.config.cognite.get_cognite_client(self.name)
+        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self, self.config, self.name, self.config.cognite.extraction_pipeline)
         while not self.stop_event.is_set():
             t0 = time.time()
 
