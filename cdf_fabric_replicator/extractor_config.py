@@ -1,15 +1,16 @@
 import logging
 from pathlib import Path
+from cognite.client.data_classes.data_modeling import CDFExternalIdReference
 from cognite.extractorutils import Extractor
-from cognite.extractorutils.base import CancellationToken
+from cognite.extractorutils.threading import CancellationToken
 from typing import Optional
 from cognite.client.data_classes import ExtractionPipelineConfigWrite
 import yaml
 from cognite.extractorutils.metrics import safe_get
-
 from cdf_fabric_replicator import __version__
 from cdf_fabric_replicator.config import Config
 from cdf_fabric_replicator.metrics import Metrics
+from cognite.extractorutils.configtools.loaders import load_yaml
 
 
 class CdfExtractorConfig(Extractor[Config]):
@@ -34,9 +35,6 @@ class CdfExtractorConfig(Extractor[Config]):
             self.client = None
             self.metrics = metrics
             self.stop_event = stop_event
-            # Only use override_config_path if provided, else fallback to default
-            if override_config_path:
-                self.config_file_path = Path(override_config_path)
             self.external_id = None
             self.logger = logging.getLogger(self.name)
             self.logger.debug(f"Initialized CdfExtractorConfig with config_file_path: {self.config_file_path}")
@@ -71,8 +69,8 @@ class CdfExtractorConfig(Extractor[Config]):
             raise
         return yaml.dump(data)
 
-
-    def retrieve_pipeline_config_standalone(cls, config, name: str, extraction_pipeline_external_id: str):
+    @staticmethod
+    def retrieve_pipeline_config_standalone(config, name: str, extraction_pipeline_external_id: str):
         """
         Retrieve the extraction pipeline config from Cognite Data Fusion using config object.
 
@@ -82,7 +80,7 @@ class CdfExtractorConfig(Extractor[Config]):
             extraction_pipeline_external_id: External ID of the extraction pipeline.
 
         Returns:
-            The extraction pipeline config as a dict.
+            The extraction pipeline config as a Config object.
         """
         try:
             client_external = config.cognite.get_cognite_client(name)
@@ -90,11 +88,14 @@ class CdfExtractorConfig(Extractor[Config]):
                 external_id=extraction_pipeline_external_id
             )
             logging.getLogger("retrieve_pipeline_config_standalone").debug(
-                f"Config data retrieved: {yaml.dump(config_data)}"
+                f"Config data retrieved: {yaml.dump(config_data.config)}"
             )
-            config_dict_ext = yaml.safe_load(config_data)
-            config.__dict__.update(config_dict_ext)
-            return config
+            # config_data.config is the YAML string
+            new_config = load_yaml(
+                source=config_data.config,
+                config_type=type(config)
+            )
+            return new_config
         except Exception as e:
             logging.getLogger("retrieve_pipeline_config_standalone").error(
                 f"Failed to retrieve pipeline config: {e}"
@@ -120,9 +121,25 @@ class CdfExtractorConfig(Extractor[Config]):
 
     def retrieve_pipeline_config(self):
         config_data = self.client.extraction_pipelines.config.retrieve(external_id=self.extraction_pipeline.external_id )
-        config_obj = yaml.safe_load(config_data)
+        config_obj = yaml.safe_load(config_data.config)
         self.logger.debug(f"config_obj retrieved: {yaml.dump(config_obj)}")
         return config_obj
 
 
+# test
+print(f"started Extractor config")
+'''with CdfExtractorConfig(
+    metrics=Metrics(),
+    stop_event=CancellationToken(),
+    name="extractor_config",
+    override_config_path="/Users/dev/replicator/config_examples/example_config.yaml"
+) as extractor_config:
+    extractor_config.run()
+    # Retrieve the config as a YAML string
+    with open("/Users/dev/replicator/config_examples/example_config.yaml", "r") as f:
+        config_yaml = yaml.safe_load(f)
 
+    # Write the extraction pipeline config using the YAML string
+    config_yaml_str = yaml.dump(config_yaml)
+    extractor_config.write_extraction_pipeline_config(config_yaml_str)
+    extractor_config.retrieve_pipeline_config()'''

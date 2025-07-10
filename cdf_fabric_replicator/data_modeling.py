@@ -102,7 +102,7 @@ class DataModelingReplicator(Extractor):
             self.logger.info("No extraction pipeline configured — exiting.")
             return
         self.client = self.config.cognite.get_cognite_client(self.name)
-        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self, self.config, self.name, self.config.extractor_pipeline.external_id)
+        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self.config, self.name, self.config.extractor_pipeline.external_id)
         while not self.stop_event.is_set():
             t0 = time.time()
 
@@ -141,6 +141,7 @@ class DataModelingReplicator(Extractor):
         For a plain `views:` list (or “all views”) we fall back to "default".
         """
         for dm_cfg in self.config.data_modeling:
+            print(f"dm_cfg: {dm_cfg}")
             try:
                 space_views = self.cognite_client.data_modeling.views.list(
                     space=dm_cfg.space, limit=-1, all_versions=False
