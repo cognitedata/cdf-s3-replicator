@@ -13,6 +13,7 @@ class ExtractorConfig:
     poll_time: int = 3600
     snapshot_interval: int = 900
 
+
 @dataclass
 class ExtractorPipelineConfig:
     external_id: str

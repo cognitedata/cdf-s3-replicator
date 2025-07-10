@@ -102,7 +102,7 @@ class DataModelingReplicator(Extractor):
             self.logger.info("No extraction pipeline configured — exiting.")
             return
         self.client = self.config.cognite.get_cognite_client(self.name)
-        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self, self.config, self.name, self.config.cognite.extraction_pipeline)
+        self.config = CdfExtractorConfig.retrieve_pipeline_config_standalone(self, self.config, self.name, self.config.extractor_pipeline.external_id)
         while not self.stop_event.is_set():
             t0 = time.time()
 
