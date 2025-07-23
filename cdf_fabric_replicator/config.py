@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from cognite.extractorutils.configtools import BaseConfig, StateStoreConfig
+from cognite.extractorutils.configtools import LoggingConfig
 
 
 @dataclass
@@ -12,6 +13,13 @@ class ExtractorConfig:
     fabric_ingest_batch_size: int = 1_000
     poll_time: int = 3600
     snapshot_interval: int = 900
+
+
+@dataclass
+class ExtractorPipelineConfig:
+    external_id: str
+    dataset_external_id: Optional[str] = None
+    dataset_name: Optional[str] = None
 
 
 @dataclass
@@ -83,6 +91,7 @@ class DestinationConfig:
 
 @dataclass
 class Config(BaseConfig):
+    logger: LoggingConfig
     extractor: ExtractorConfig
     source: Optional[SourceConfig]
     destination: Optional[DestinationConfig]
