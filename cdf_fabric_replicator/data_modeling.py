@@ -27,14 +27,17 @@ from cdf_fabric_replicator import __version__
 from cdf_fabric_replicator.config import Config, DataModelingConfig
 from cdf_fabric_replicator.metrics import Metrics
 
+from cdf_fabric_replicator.extractor_config import CdfExtractorConfig
+
+
 class DataModelingReplicator(Extractor):
     """Streams CDF Data-Modeling instances into S3-based Delta tables."""
 
     def __init__(
-        self,
-        metrics: Metrics,
-        stop_event: CancellationToken,
-        override_config_path: Optional[str] = None,
+            self,
+            metrics: Metrics,
+            stop_event: CancellationToken,
+            override_config_path: Optional[str] = None,
     ):
         """
         Initializes the replicator with configuration, metrics, and cancellation control.
@@ -77,7 +80,6 @@ class DataModelingReplicator(Extractor):
                 region_name=os.getenv("AWS_REGION"),
             )
 
-
     def run(self) -> None:
         """
         Main run loop for the replicator.
@@ -96,8 +98,24 @@ class DataModelingReplicator(Extractor):
         last_snapshot_time = 0
         snapshot_interval = getattr(self.config.extractor, 'snapshot_interval', self.config.extractor.poll_time)
 
+        try:
+            extraction_pipeline = self.config.cognite.get_extraction_pipeline(self.cognite_client)
+            if extraction_pipeline is None:
+                self.logger.info("No extraction pipeline configured — exiting.")
+                return
+        except Exception as e:
+            self.logger.error(f"Failed to get extraction pipeline: {e}")
+            return
+
         while not self.stop_event.is_set():
             t0 = time.time()
+
+            try:
+                remote_config = self._reload_remote_config()
+                if remote_config:
+                    self.logger.info("Configuration reloaded - processing with updated config")
+            except Exception as e:
+                self.logger.error(f"Error during config reload: {e}")
 
             self.process_spaces()
 
@@ -110,7 +128,6 @@ class DataModelingReplicator(Extractor):
                 last_snapshot_time = t0
             else:
                 next_snapshot_in = int(snapshot_interval - (t0 - last_snapshot_time))
-                self.logger.debug("⏭Skipping snapshot publish (next in %ds)", next_snapshot_in)
 
             delay = max(self.config.extractor.poll_time - (time.time() - t0), 0)
             if delay:
@@ -120,7 +137,6 @@ class DataModelingReplicator(Extractor):
                     int(delay),
                 )
                 self.stop_event.wait(delay)
-
 
     def process_spaces(self) -> None:
         """
@@ -136,7 +152,7 @@ class DataModelingReplicator(Extractor):
         for dm_cfg in self.config.data_modeling:
             try:
                 space_views = self.cognite_client.data_modeling.views.list(
-                    space=dm_cfg.space, limit=-1, all_versions=False
+                    space=dm_cfg.space, limit=-1, all_versions=False, include_global=True,
                 )
             except CogniteAPIError as err:
                 self.logger.error("View-list failed for %s: %s", dm_cfg.space, err)
@@ -153,7 +169,6 @@ class DataModelingReplicator(Extractor):
                         v for v in space_views
                         if wanted is None or v.external_id in wanted
                     ]
-
                     if not selected:
                         self.logger.warning(
                             "No matching views %s found for model %s in space %s",
@@ -175,7 +190,6 @@ class DataModelingReplicator(Extractor):
                 self._model_xid = None
                 continue
 
-
     def replicate_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> None:
         """Two separate syncs to keep each query small."""
         if view.get("usedFor") != "edge":
@@ -193,14 +207,12 @@ class DataModelingReplicator(Extractor):
             kind="edges",
         )
 
-
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
         query = (
             self._edge_query_for_view(dm_cfg, view) if kind == "edges"
             else self._node_query_for_view(dm_cfg, view)
         )
         self._iterate_and_write(dm_cfg, state_id, query)
-
 
     def _node_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
         """Fixed version that matches the working code pattern"""
@@ -221,7 +233,6 @@ class DataModelingReplicator(Extractor):
             "nodes": Select([SourceSelector(vid, list(view["properties"]))])
         }
         return Query(with_=with_, select=select)
-
 
     def _edge_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
@@ -263,7 +274,6 @@ class DataModelingReplicator(Extractor):
             select={"edges": Select([SourceSelector(vid, props)])},
         )
 
-
     def _page_contains_future_change(self, result: QueryResult, t0_ms: int) -> bool:
         check = lambda inst: inst.last_updated_time >= t0_ms
         return any(
@@ -271,13 +281,18 @@ class DataModelingReplicator(Extractor):
             for i in result.data.get(rs, [])
         )
 
-
     def _iterate_and_write(self, dm_cfg: DataModelingConfig, state_id: str, query: Query) -> None:
-        """Enhanced version with include_typing=False like the working code"""
+        """
+        Safely sync CDF data modeling instances to S3 Delta tables with enhanced error handling.
+        This method performs incremental sync using cursors to track progress and includes multiple
+        safety mechanisms to prevent data loss during API failures or temporary outages.
+        """
         cursors = self.state_store.get_state(external_id=state_id)[1]
 
         if cursors:
             query.cursors = json.loads(str(cursors))
+
+        original_cursors = query.cursors
 
         try:
             res = self.cognite_client.data_modeling.instances.sync(
@@ -285,8 +300,8 @@ class DataModelingReplicator(Extractor):
                 include_typing=False
             )
         except CogniteAPIError as e:
-            self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with null cursors...")
-            query.cursors = None
+            self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with original cursors...")
+            query.cursors = original_cursors
             try:
                 res = self.cognite_client.data_modeling.instances.sync(
                     query=query,
@@ -294,10 +309,24 @@ class DataModelingReplicator(Extractor):
                 )
             except CogniteAPIError as e:
                 self.logger.error(f"Retry sync also failed for {state_id}: {e}")
-                raise e
+                if original_cursors is not None:
+                    self.logger.warning(f"Resetting cursors for {state_id} as last resort")
+                    query.cursors = None
+                    res = self.cognite_client.data_modeling.instances.sync(
+                        query=query,
+                        include_typing=False
+                    )
+                else:
+                    raise e
 
         query_start_ms = int(time.time() * 1000)
-        self._send_to_s3(data_model_config=dm_cfg, result=res)
+
+        has_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
+        if has_data:
+            self._send_to_s3(data_model_config=dm_cfg, result=res)
+            self.logger.info(f"Synced data for {state_id}: {sum(len(res.data.get(k, [])) for k in res.data)} records")
+        else:
+            self.logger.info(f"No new data for {state_id} - skipping write")
 
         page_count = 1
         while any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in")):
@@ -315,24 +344,19 @@ class DataModelingReplicator(Extractor):
                 )
                 page_count += 1
             except CogniteAPIError as e:
-                self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Retrying...")
-                query.cursors = None
-                try:
-                    res = self.cognite_client.data_modeling.instances.sync(
-                        query=query,
-                        include_typing=False
-                    )
-                except CogniteAPIError as e:
-                    self.logger.error(f"Page {page_count} retry failed for {state_id}: {e}")
-                    raise e
+                self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Keeping current cursors...")
+                break
 
-            self._send_to_s3(data_model_config=dm_cfg, result=res)
+            has_page_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
+            if has_page_data:
+                self._send_to_s3(data_model_config=dm_cfg, result=res)
 
         final_cursors = query.cursors
-
-        self.state_store.set_state(external_id=state_id, high=json.dumps(final_cursors))
-        self.state_store.synchronize()
-
+        if final_cursors:
+            self.state_store.set_state(external_id=state_id, high=json.dumps(final_cursors))
+            self.state_store.synchronize()
+        else:
+            self.logger.warning(f"Not updating state for {state_id} - no valid cursors")
 
     def _raw_prefix(self, dm_space: str) -> str:
         """
@@ -342,7 +366,6 @@ class DataModelingReplicator(Extractor):
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
         return f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}/{model}"
 
-
     def _publish_prefix(self, dm_space: str) -> str:
         """
         s3://<bucket>/<prefix>/publish/<space>/<model? or default>
@@ -351,9 +374,8 @@ class DataModelingReplicator(Extractor):
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
         return f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}/{model}"
 
-
     def _current_views_map(self, dm_space: str, selected: set[str] | None = None,
-    ) -> Dict[str, Dict[str, Union[int, bool]]]:
+                           ) -> Dict[str, Dict[str, Union[int, bool]]]:
         """
         Returns {externalId: {"version": int, "is_edge": bool}}
         The Views API already guarantees each externalId appears once,
@@ -367,7 +389,6 @@ class DataModelingReplicator(Extractor):
         }
         mapping["_edges"] = {"version": None, "is_edge": True}
         return mapping
-
 
     def _publish_space_snapshots(self, dm_cfg: DataModelingConfig) -> None:
         """
@@ -395,7 +416,6 @@ class DataModelingReplicator(Extractor):
 
             self._model_xid = None
             return
-
 
     def _edge_folders_for_anchor(self, dm_space: str, anchor_xid: str) -> list[str]:
         """
@@ -510,7 +530,6 @@ class DataModelingReplicator(Extractor):
             self._cleanup_temp_files(pub_dir, temp_suffix)
             raise
 
-
     def _atomic_replace_files(self, file_updates: list[tuple[str, str, str]]) -> None:
         """
         Atomically replace multiple files by copying temp files to final locations.
@@ -542,7 +561,6 @@ class DataModelingReplicator(Extractor):
                 except Exception:
                     pass
 
-
     def _cleanup_temp_files(self, pub_dir: str, temp_suffix: str) -> None:
         """Clean up any temporary files that might have been created."""
         try:
@@ -566,7 +584,6 @@ class DataModelingReplicator(Extractor):
         except Exception as e:
             self.logger.warning("Failed to cleanup temp files: %s", e)
 
-
     def _create_empty_edges_table(self) -> pa.Table:
         """
         Create an empty edges table with the correct schema for Tableau consistency.
@@ -588,7 +605,6 @@ class DataModelingReplicator(Extractor):
         ])
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
 
-
     def _create_empty_nodes_table(self) -> pa.Table:
         """
         Create an empty nodes table with the correct schema for Tableau consistency.
@@ -605,7 +621,6 @@ class DataModelingReplicator(Extractor):
         ])
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
 
-
     def _send_to_s3(self, data_model_config: DataModelingConfig, result: QueryResult) -> None:
         """
         Extracts instance data and appends it to the corresponding S3 Delta table.
@@ -614,7 +629,6 @@ class DataModelingReplicator(Extractor):
         for tbl_name, rows in self._extract_instances(result).items():
             self._delta_append(tbl_name, rows, data_model_config.space)
 
-
     def _send_to_local(self, data_model_config: DataModelingConfig, result: QueryResult) -> None:
         """
         Extracts instance data and appends it to a local Delta table.
@@ -622,7 +636,6 @@ class DataModelingReplicator(Extractor):
         """
         for tbl_name, rows in self._extract_instances(result).items():
             self._delta_append(tbl_name, rows, data_model_config.space)
-
 
     @staticmethod
     def _extract_instances(res: QueryResult) -> dict[str, list[dict]]:
@@ -680,12 +693,16 @@ class DataModelingReplicator(Extractor):
 
         return out
 
-
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
-        Append rows to the *RAW* Delta table at
-        s3://<bucket>/<prefix>/raw/<space>/<model-xid>/views/<table>
+        Safely append rows to S3-based Delta table with data validation and cleanup.
+        This method writes CDF instance data to Delta Lake tables stored in S3, with built-in
+        safety checks to prevent corruption and handle deletions (tombstone processing).
         """
+        if not rows:
+            self.logger.info(f"Skipping empty write to {table}")
+            return
+
         if rows:
             null_cols = [k for k in rows[0] if all(r.get(k) is None for r in rows)]
             if null_cols:
@@ -733,3 +750,34 @@ class DataModelingReplicator(Extractor):
         except DeltaError as err:
             self.logger.error("Delta write failed: %s", err)
             raise
+
+    def _reload_remote_config(self) -> bool:
+        """Reload config from remote source if it's a remote config."""
+
+        if not (hasattr(self.config, 'cognite') and self.config.cognite):
+            self.logger.info("Not a remote config, skipping reload")
+            return False
+
+        try:
+            extraction_pipeline = self.config.cognite.get_extraction_pipeline(self.cognite_client)
+            if not extraction_pipeline:
+                self.logger.info("No extraction pipeline found, skipping reload")
+                return False
+        except Exception as e:
+            self.logger.error(f"Could not get extraction pipeline: {e}")
+            return False
+
+        try:
+            new_config = CdfExtractorConfig.retrieve_pipeline_config_standalone(
+                config=self.config,
+                name=self.name,
+                extraction_pipeline_external_id=extraction_pipeline.external_id
+            )
+
+            self.config = new_config
+            self.s3_cfg = self.config.destination.s3 if self.config.destination else None
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to reload remote config: {e}")
+            return False
