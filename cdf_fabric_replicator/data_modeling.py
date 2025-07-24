@@ -5,7 +5,7 @@ import time
 import boto3
 from pathlib import Path
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 import pyarrow as pa
 from cognite.client.data_classes.data_modeling.ids import ViewId, ContainerId
 from cognite.client.data_classes.data_modeling.query import (
@@ -59,11 +59,13 @@ class DataModelingReplicator(Extractor):
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         self.s3_cfg = None
         self._model_xid: str | None = None
+        self._model_version: str | None = None
         self.base_dir: Path = Path.cwd() / "deltalake"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         self._s3 = None
         self.LARGE_TABLE_THRESHOLD = 1_000_000  # Threshold for large views to optimize memory usage
+
 
     def _ensure_s3(self):
         """Adds S3 client if not already initialized."""
@@ -138,74 +140,161 @@ class DataModelingReplicator(Extractor):
                 )
                 self.stop_event.wait(delay)
 
+
     def process_spaces(self) -> None:
         """
         Replicate the views configured in `config.yaml`, writing them under
-
-            raw/<space>/<model-xid>/views/…
-            publish/<space>/<model-xid>/…
-
-        If the DataModelingConfig contains `data_models:` we set
-        `self._model_xid` to the model’s external-id while processing its views.
-        For a plain `views:` list (or “all views”) we fall back to "default".
+            raw/<space>/<model-xid>/<version>/views/…
+            publish/<space>/<model-xid>/<version>/views…
+        Always uses explicit data model version numbers.
         """
         for dm_cfg in self.config.data_modeling:
-            try:
-                space_views = self.cognite_client.data_modeling.views.list(
-                    space=dm_cfg.space, limit=-1, all_versions=False, include_global=True,
-                )
-            except CogniteAPIError as err:
-                self.logger.error("View-list failed for %s: %s", dm_cfg.space, err)
-                continue
-
-            by_id = {v.external_id: v for v in space_views}
-
             if dm_cfg.data_models:
                 for model in dm_cfg.data_models:
                     self._model_xid = model.external_id
-                    wanted = set(model.views) if model.views else None
+                    self._model_version = None
 
-                    selected = [
-                        v for v in space_views
-                        if wanted is None or v.external_id in wanted
-                    ]
-                    if not selected:
-                        self.logger.warning(
-                            "No matching views %s found for model %s in space %s",
-                            ", ".join(sorted(wanted)) if wanted else "<all>",
-                            model.external_id,
-                            dm_cfg.space,
-                        )
-                        continue
+                    try:
+                        if model.version is not None:
+                            self._model_version = str(model.version)
+                            data_model_id = (dm_cfg.space, model.external_id, model.version)
+                            data_models = self.cognite_client.data_modeling.data_models.retrieve(
+                                ids=[data_model_id],
+                                inline_views=False
+                            )
+                            if not data_models:
+                                self.logger.warning(
+                                    "Data model %s version %s not found in space %s",
+                                    model.external_id, model.version, dm_cfg.space
+                                )
+                                continue
 
-                    for view in selected:
-                        try:
-                            self.replicate_view(dm_cfg, view.dump())
-                        except Exception as exc:
-                            self.logger.error(
-                                "Replicating %s.%s failed: %s",
-                                dm_cfg.space, view.external_id, exc,
+                            data_model = data_models[0]
+                            if not data_model.views:
+                                self.logger.warning(
+                                    "Data model %s version %s has no views in space %s",
+                                    model.external_id, model.version, dm_cfg.space
+                                )
+                                continue
+
+                            view_ids = data_model.views
+                            wanted = set(model.views) if model.views else None
+                            if wanted is not None:
+                                view_ids = [v for v in view_ids if v.external_id in wanted]
+                                found_views = {v.external_id for v in view_ids}
+                                missing_views = wanted - found_views
+                                if missing_views:
+                                    self.logger.warning(
+                                        "Views %s not found in data model %s version %s",
+                                        ", ".join(sorted(missing_views)), model.external_id, model.version
+                                    )
+
+                            if view_ids:
+                                view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
+                                selected_views = self.cognite_client.data_modeling.views.retrieve(
+                                    ids=view_tuples,
+                                )
+                            else:
+                                selected_views = []
+                        else:
+                            all_data_models = self.cognite_client.data_modeling.data_models.list(
+                                space=dm_cfg.space,
+                                limit=-1,
+                                all_versions=False
+                            )
+                            latest_model = next(
+                                (dm for dm in all_data_models if dm.external_id == model.external_id),
+                                None
+                            )
+                            if not latest_model:
+                                self.logger.error(
+                                    "No data model found with external_id %s in space %s",
+                                    model.external_id, dm_cfg.space
+                                )
+                                continue
+
+                            self._model_version = str(latest_model.version)
+                            if latest_model.views:
+                                view_ids = latest_model.views
+                                wanted = set(model.views) if model.views else None
+
+                                if wanted is not None:
+                                    view_ids = [v for v in view_ids if v.external_id in wanted]
+
+                                    found_views = {v.external_id for v in view_ids}
+                                    missing_views = wanted - found_views
+                                    if missing_views:
+                                        self.logger.warning(
+                                            "Views %s not found in data model %s version %s",
+                                            ", ".join(sorted(missing_views)), model.external_id, self._model_version
+                                        )
+
+                                if view_ids:
+                                    view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
+                                    selected_views = self.cognite_client.data_modeling.views.retrieve(
+                                        ids=view_tuples,
+                                    )
+                                else:
+                                    selected_views = []
+                            else:
+                                self.logger.error(
+                                    "Data model %s version %s has no views defined - cannot proceed",
+                                    model.external_id, self._model_version
+                                )
+                                continue
+
+                        if not self._model_version:
+                            raise RuntimeError(
+                                f"CRITICAL: _model_version not set for {model.external_id} in space {dm_cfg.space}"
                             )
 
-                self._model_xid = None
-                continue
+                        if not selected_views:
+                            self.logger.warning(
+                                "No matching views found for model %s version %s in space %s",
+                                model.external_id, self._model_version, dm_cfg.space,
+                            )
+                            continue
 
-    def replicate_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> None:
+                        for view in selected_views:
+                            try:
+                                self.replicate_view(dm_cfg, model.external_id, self._model_version, view.dump())
+                            except Exception as exc:
+                                self.logger.error(
+                                    "Replicating %s.%s (v%s) for model %s version %s failed: %s",
+                                    dm_cfg.space, view.external_id, view.version,
+                                    model.external_id, self._model_version, exc,
+                                )
+                    except Exception as err:
+                        self.logger.error(
+                            "Failed to process data model %s in space %s: %s",
+                            model.external_id, dm_cfg.space, err, exc_info=True
+                        )
+                    finally:
+                        self.logger.info(
+                            "=== Finished processing data model %s version %s ===",
+                            model.external_id, self._model_version or "UNKNOWN"
+                        )
+                        self._model_xid = None
+                        self._model_version = None
+
+
+    def replicate_view(self, dm_cfg: DataModelingConfig, dm_external_id: str, dm_version: str,  view: dict[str, Any]) -> None:
         """Two separate syncs to keep each query small."""
         if view.get("usedFor") != "edge":
             self._process_instances(
                 dm_cfg,
-                f"{view['space']}_{view['externalId']}_nodes",
+                f"{view['space']}_{dm_external_id}_{dm_version}_{view['externalId']}_nodes",
                 view=view,
                 kind="nodes",
             )
 
         self._process_instances(
             dm_cfg,
-            f"{view['space']}_{view['externalId']}_edges",
+            f"{view['space']}_{dm_external_id}_{dm_version}_{view['externalId']}_edges",
             view=view,
             kind="edges",
         )
+
 
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
         query = (
@@ -214,8 +303,8 @@ class DataModelingReplicator(Extractor):
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
+
     def _node_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
-        """Fixed version that matches the working code pattern"""
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         container_pred = HasData(
@@ -230,14 +319,14 @@ class DataModelingReplicator(Extractor):
             "nodes": NodeResultSetExpression(filter=node_filter, limit=2000)
         }
         select = {
-            "nodes": Select([SourceSelector(vid, list(view["properties"]))])
+            "nodes": Select([SourceSelector(vid, props)])
         }
         return Query(with_=with_, select=select)
+
 
     def _edge_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
-
         if view.get("usedFor") != "edge":
             container_pred = HasData(
                 containers=[ContainerId(dm_cfg.space, view["externalId"])]
@@ -262,7 +351,6 @@ class DataModelingReplicator(Extractor):
                     "edges_in": Select(),
                 },
             )
-
         return Query(
             with_={
                 "edges": EdgeResultSetExpression(
@@ -274,12 +362,14 @@ class DataModelingReplicator(Extractor):
             select={"edges": Select([SourceSelector(vid, props)])},
         )
 
+
     def _page_contains_future_change(self, result: QueryResult, t0_ms: int) -> bool:
         check = lambda inst: inst.last_updated_time >= t0_ms
         return any(
             check(i) for rs in ("nodes", "edges", "edges_out", "edges_in")
             for i in result.data.get(rs, [])
         )
+
 
     def _iterate_and_write(self, dm_cfg: DataModelingConfig, state_id: str, query: Query) -> None:
         """
@@ -320,11 +410,9 @@ class DataModelingReplicator(Extractor):
                     raise e
 
         query_start_ms = int(time.time() * 1000)
-
         has_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
         if has_data:
             self._send_to_s3(data_model_config=dm_cfg, result=res)
-            self.logger.info(f"Synced data for {state_id}: {sum(len(res.data.get(k, [])) for k in res.data)} records")
         else:
             self.logger.info(f"No new data for {state_id} - skipping write")
 
@@ -358,21 +446,38 @@ class DataModelingReplicator(Extractor):
         else:
             self.logger.warning(f"Not updating state for {state_id} - no valid cursors")
 
+
     def _raw_prefix(self, dm_space: str) -> str:
         """
-        s3://<bucket>/<prefix>/raw/<space>/<model? or default>/views
+        s3://<bucket>/<prefix>/raw/<space>/<model-xid>/<version>/views
         """
         model = self._model_xid or "default"
+        version = self._model_version
+        if not version:
+            error_msg = f"CRITICAL ERROR: No data model version set for model {model} in space {dm_space}. This should never happen!"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
-        return f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}/{model}"
+        s3_path = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}/{model}/{version}"
+        return s3_path
+
 
     def _publish_prefix(self, dm_space: str) -> str:
         """
-        s3://<bucket>/<prefix>/publish/<space>/<model? or default>
+        s3://<bucket>/<prefix>/publish/<space>/<model-xid>/<version>/views
         """
         model = self._model_xid or "default"
+        version = self._model_version
+        if not version:
+            error_msg = f"CRITICAL ERROR: No data model version set for model {model} in space {dm_space}. This should never happen!"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
-        return f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}/{model}"
+        s3_path = f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}/{model}/{version}"
+        return s3_path
+
 
     def _current_views_map(self, dm_space: str, selected: set[str] | None = None,
                            ) -> Dict[str, Dict[str, Union[int, bool]]]:
@@ -390,36 +495,154 @@ class DataModelingReplicator(Extractor):
         mapping["_edges"] = {"version": None, "is_edge": True}
         return mapping
 
+
     def _publish_space_snapshots(self, dm_cfg: DataModelingConfig) -> None:
         """
-        Write Tableau-friendly snapshots under publish/<space>/<model-xid>/…
-        The same model-tagging logic as in `process_spaces()` is applied here.
+        Write Tableau-friendly snapshots under publish/<space>/<model-xid>/<version>/views
+        Always uses explicit data model version numbers.
         """
         dm_space = dm_cfg.space
 
         if dm_cfg.data_models:
             for model in dm_cfg.data_models:
                 self._model_xid = model.external_id
-                wanted = set(model.views) if model.views else None
-                view_map = self._current_views_map(dm_space, wanted)
+                self._model_version = None
+                try:
+                    view_map = {}
 
-                for xid, meta in view_map.items():
-                    try:
-                        self._write_view_snapshot(
-                            dm_space, xid, meta["is_edge"]
-                        )
-                    except Exception as exc:
-                        self.logger.exception(
-                            "Snapshot publish failed for %s.%s: %s",
-                            dm_space, xid, exc,
+                    if model.version is not None:
+                        self._model_version = str(model.version)
+                        data_model_id = (dm_space, model.external_id, model.version)
+                        data_models = self.cognite_client.data_modeling.data_models.retrieve(
+                            ids=[data_model_id],
+                            inline_views=False
                         )
 
-            self._model_xid = None
+                        if not data_models:
+                            self.logger.warning(
+                                "Data model %s version %s not found in space %s during snapshot",
+                                model.external_id, model.version, dm_space
+                            )
+                            continue
+
+                        data_model = data_models[0]
+                        if not data_model.views:
+                            self.logger.warning(
+                                "Data model %s version %s has no views in space %s during snapshot",
+                                model.external_id, model.version, dm_space
+                            )
+                            continue
+
+                        view_ids = data_model.views
+                        wanted = set(model.views) if model.views else None
+                        if wanted is not None:
+                            view_ids = [v for v in view_ids if v.external_id in wanted]
+
+                            found_views = {v.external_id for v in view_ids}
+                            missing_views = wanted - found_views
+                            if missing_views:
+                                self.logger.warning(
+                                    "Views %s not found in data model %s version %s during snapshot",
+                                    ", ".join(sorted(missing_views)), model.external_id, model.version
+                                )
+
+                        if view_ids:
+                            view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
+                            selected_views = self.cognite_client.data_modeling.views.retrieve(
+                                ids=view_tuples,
+                            )
+                            for v in selected_views:
+                                view_map[v.external_id] = {
+                                    "version": v.version,
+                                    "is_edge": v.used_for == "edge"
+                                }
+
+                    else:
+                        all_data_models = self.cognite_client.data_modeling.data_models.list(
+                            space=dm_space,
+                            limit=-1,
+                            all_versions=False
+                        )
+                        latest_model = next(
+                            (dm for dm in all_data_models if dm.external_id == model.external_id),
+                            None
+                        )
+                        if not latest_model:
+                            self.logger.error(
+                                "No data model found with external_id %s in space %s",
+                                model.external_id, dm_cfg.space
+                            )
+                            continue
+
+                        self._model_version = str(latest_model.version)
+                        if latest_model.views:
+                            view_ids = latest_model.views
+                            wanted = set(model.views) if model.views else None
+
+                            if wanted is not None:
+                                view_ids = [v for v in view_ids if v.external_id in wanted]
+                                found_views = {v.external_id for v in view_ids}
+                                missing_views = wanted - found_views
+                                if missing_views:
+                                    self.logger.warning(
+                                        "Views %s not found in data model %s version %s during snapshot",
+                                        ", ".join(sorted(missing_views)), model.external_id, self._model_version
+                                    )
+
+                            if view_ids:
+                                view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
+                                selected_views = self.cognite_client.data_modeling.views.retrieve(
+                                    ids=view_tuples,
+                                )
+
+                                for v in selected_views:
+                                    view_map[v.external_id] = {
+                                        "version": v.version,
+                                        "is_edge": v.used_for == "edge"
+                                    }
+                        else:
+                            self.logger.error(
+                                "Data model %s version %s has no views defined - cannot create snapshots",
+                                model.external_id, self._model_version
+                            )
+                            continue
+
+                    if not self._model_version:
+                        raise RuntimeError(
+                            f"CRITICAL: _model_version not set for {model.external_id} in space {dm_space}"
+                        )
+
+                    view_map["_edges"] = {"version": None, "is_edge": True}
+                    for xid, meta in view_map.items():
+                        try:
+                            self._write_view_snapshot(
+                                dm_space, xid, meta["is_edge"]
+                            )
+                        except Exception as exc:
+                            version_info = f" (v{meta['version']})" if meta["version"] else ""
+                            self.logger.exception(
+                                "Snapshot publish failed for %s.%s%s in model %s version %s: %s",
+                                dm_space, xid, version_info, model.external_id, self._model_version, exc,
+                            )
+                except Exception as err:
+                    self.logger.error(
+                        "Failed to create snapshots for data model %s in space %s: %s",
+                        model.external_id, dm_space, err, exc_info=True
+                    )
+                finally:
+                    self.logger.info(
+                        "=== Finished creating snapshots for data model %s version %s ===",
+                        model.external_id, self._model_version or "UNKNOWN"
+                    )
+                    self._model_xid = None
+                    self._model_version = None
+
             return
+
 
     def _edge_folders_for_anchor(self, dm_space: str, anchor_xid: str) -> list[str]:
         """
-        Return every s3://…/raw/<space>/views/<edgeView>/edges folder that
+        Return every s3://…/raw/<space>/<model>/<version>/views/<edgeView>/edges folder that
         (heuristically) belongs to the anchor node view *anchor_xid*.
 
         • The anchor's own   <anchor_xid>/edges
@@ -428,28 +651,25 @@ class DataModelingReplicator(Extractor):
         self._ensure_s3()
         prefix = f"{self._raw_prefix(dm_space)}/views/"
         bucket, key_prefix = prefix[5:].split("/", 1)
-
         resp = self._s3.list_objects_v2(
             Bucket=bucket, Prefix=key_prefix, Delimiter="/"
         )
-
         folders = [
             cp["Prefix"][len(key_prefix):-1]
             for cp in resp.get("CommonPrefixes", [])
             if cp["Prefix"].endswith("/edges/")
         ]
-
         edge_view_folders = [
             f"{prefix}{f}"
             for f in folders
             if f.startswith(anchor_xid)
         ]
-
         anchor_edges = f"{prefix}{anchor_xid}/edges"
         if anchor_edges not in edge_view_folders:
             edge_view_folders.append(anchor_edges)
 
         return edge_view_folders
+
 
     def _write_view_snapshot(self, dm_space: str, view_xid: str, is_edge_only: bool) -> None:
         """
@@ -457,6 +677,7 @@ class DataModelingReplicator(Extractor):
         Always writes to: nodes.parquet and edges.parquet (never deletes directory).
         Uses temporary files to ensure Tableau never sees partial/missing data.
         Memory-efficient processing for large views.
+        Reads from versioned raw paths.
         """
         pub_dir = f"{self._publish_prefix(dm_space)}/{view_xid}/"
         temp_suffix = f"_temp_{uuid.uuid4().hex[:8]}"
@@ -507,16 +728,12 @@ class DataModelingReplicator(Extractor):
 
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
-
                     pq.write_table(node_tbl, temp_node_path, compression="snappy")
                     files_to_update.append((temp_node_path, final_node_path, "nodes"))
                 except (FileNotFoundError, DeltaError):
-                    self.logger.info("No node data for %s, creating empty nodes.parquet", view_xid)
                     empty_node_tbl = self._create_empty_nodes_table()
-
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
-
                     pq.write_table(empty_node_tbl, temp_node_path, compression="snappy")
                     files_to_update.append((temp_node_path, final_node_path, "nodes"))
 
@@ -524,21 +741,19 @@ class DataModelingReplicator(Extractor):
                 self._atomic_replace_files(files_to_update)
             else:
                 self.logger.warning("No data files created for %s", view_xid)
-
         except Exception as e:
             self.logger.error("Snapshot creation failed for %s: %s", view_xid, e)
             self._cleanup_temp_files(pub_dir, temp_suffix)
             raise
 
+
     def _atomic_replace_files(self, file_updates: list[tuple[str, str, str]]) -> None:
         """
         Atomically replace multiple files by copying temp files to final locations.
-
         Args:
             file_updates: List of (temp_path, final_path, description) tuples
         """
         self._ensure_s3()
-
         try:
             for temp_path, final_path, desc in file_updates:
                 temp_bucket, temp_key = temp_path[5:].split("/", 1)
@@ -549,7 +764,6 @@ class DataModelingReplicator(Extractor):
                     Bucket=final_bucket,
                     Key=final_key
                 )
-
         except Exception as e:
             self.logger.error("Failed during atomic file replacement: %s", e)
             raise
@@ -560,6 +774,7 @@ class DataModelingReplicator(Extractor):
                     self._s3.delete_object(Bucket=temp_bucket, Key=temp_key)
                 except Exception:
                     pass
+
 
     def _cleanup_temp_files(self, pub_dir: str, temp_suffix: str) -> None:
         """Clean up any temporary files that might have been created."""
@@ -574,7 +789,6 @@ class DataModelingReplicator(Extractor):
                 obj for obj in response.get('Contents', [])
                 if temp_suffix in obj['Key']
             ]
-
             if temp_objects:
                 delete_objects = [{'Key': obj['Key']} for obj in temp_objects]
                 self._s3.delete_objects(
@@ -583,6 +797,7 @@ class DataModelingReplicator(Extractor):
                 )
         except Exception as e:
             self.logger.warning("Failed to cleanup temp files: %s", e)
+
 
     def _create_empty_edges_table(self) -> pa.Table:
         """
@@ -605,6 +820,7 @@ class DataModelingReplicator(Extractor):
         ])
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
 
+
     def _create_empty_nodes_table(self) -> pa.Table:
         """
         Create an empty nodes table with the correct schema for Tableau consistency.
@@ -621,6 +837,7 @@ class DataModelingReplicator(Extractor):
         ])
         return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
 
+
     def _send_to_s3(self, data_model_config: DataModelingConfig, result: QueryResult) -> None:
         """
         Extracts instance data and appends it to the corresponding S3 Delta table.
@@ -628,6 +845,7 @@ class DataModelingReplicator(Extractor):
         """
         for tbl_name, rows in self._extract_instances(result).items():
             self._delta_append(tbl_name, rows, data_model_config.space)
+
 
     def _send_to_local(self, data_model_config: DataModelingConfig, result: QueryResult) -> None:
         """
@@ -637,6 +855,7 @@ class DataModelingReplicator(Extractor):
         for tbl_name, rows in self._extract_instances(result).items():
             self._delta_append(tbl_name, rows, data_model_config.space)
 
+
     @staticmethod
     def _extract_instances(res: QueryResult) -> dict[str, list[dict]]:
         """
@@ -644,7 +863,6 @@ class DataModelingReplicator(Extractor):
         •  Node views       → tables "<view>/nodes" and "<view>/edges"
         """
         out: dict[str, list[dict]] = {}
-
         for rs_name in ("edges", "edges_out", "edges_in"):
             for e in res.data.get(rs_name, []):
                 edge_view_xid = e.type.external_id
@@ -654,7 +872,6 @@ class DataModelingReplicator(Extractor):
                     None if rs_name == "edges"
                     else ("out" if rs_name.endswith("_out") else "in")
                 )
-
                 row = {
                     "space": e.space,
                     "instanceType": "edge",
@@ -693,14 +910,15 @@ class DataModelingReplicator(Extractor):
 
         return out
 
+
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
         Safely append rows to S3-based Delta table with data validation and cleanup.
         This method writes CDF instance data to Delta Lake tables stored in S3, with built-in
         safety checks to prevent corruption and handle deletions (tombstone processing).
+        Uses explicit data model version in the S3 path structure.
         """
         if not rows:
-            self.logger.info(f"Skipping empty write to {table}")
             return
 
         if rows:
@@ -711,12 +929,15 @@ class DataModelingReplicator(Extractor):
                         r.pop(k, None)
 
         model = self._model_xid or "default"
+        version = self._model_version
+        if not version:
+            raise RuntimeError(f"No data model version set for model {model} in space {space}")
+
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
         s3_uri = (
             f"s3://{self.s3_cfg.bucket}/"
-            f"{prefix}raw/{space}/{model}/views/{table}"
+            f"{prefix}raw/{space}/{model}/{version}/views/{table}"
         )
-
         try:
             write_deltalake(
                 s3_uri,
@@ -729,7 +950,6 @@ class DataModelingReplicator(Extractor):
                     "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
                 },
             )
-
             tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
             if tombstones:
                 dt = DeltaTable(
@@ -746,10 +966,10 @@ class DataModelingReplicator(Extractor):
                 predicate = f"externalId IN ({escaped_list})"
 
                 dt.delete(predicate)
-
         except DeltaError as err:
             self.logger.error("Delta write failed: %s", err)
             raise
+
 
     def _reload_remote_config(self) -> bool:
         """Reload config from remote source if it's a remote config."""
@@ -768,16 +988,14 @@ class DataModelingReplicator(Extractor):
             return False
 
         try:
-            new_config = CdfExtractorConfig.retrieve_pipeline_config_standalone(
+            new_config = CdfExtractorConfig.retrieve_pipeline_config(
                 config=self.config,
                 name=self.name,
                 extraction_pipeline_external_id=extraction_pipeline.external_id
             )
-
             self.config = new_config
             self.s3_cfg = self.config.destination.s3 if self.config.destination else None
             return True
-
         except Exception as e:
             self.logger.error(f"Failed to reload remote config: {e}")
             return False

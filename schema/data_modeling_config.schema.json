@@ -20,19 +20,17 @@
       "description": "Optional list of data-models inside this space that should be synced.",
       "items": {
         "type": "object",
-        "required": [
-          "external_id"
-        ],
+        "required": ["external_id"],
         "properties": {
-          "external_id": {
-            "type": "string"
-          },
+          "external_id": {"type": "string"},
           "views": {
             "type": "array",
             "description": "Views to sync from this data-model (omit ⇢ all views in the model).",
-            "items": {
-              "type": "string"
-            }
+            "items": {"type": "string"}
+          },
+          "version": {
+            "type": "string",
+            "description": "Specific data model version to sync. If omitted, uses the latest version."
           }
         },
         "unevaluatedProperties": false

@@ -34,6 +34,7 @@ class SubscriptionsConfig:
 class DMModel:
     external_id: str
     views: list[str] | None = None
+    version: Optional[str] = None
 
 
 @dataclass

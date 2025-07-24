@@ -64,7 +64,7 @@ class CdfExtractorConfig(Extractor[Config]):
         return yaml.dump(data)
 
     @classmethod
-    def retrieve_pipeline_config_standalone(cls, config, name: str, extraction_pipeline_external_id: str):
+    def retrieve_pipeline_config(cls, config, name: str, extraction_pipeline_external_id: str):
         try:
             client_external = config.cognite.get_cognite_client(name)
 
@@ -85,7 +85,8 @@ class CdfExtractorConfig(Extractor[Config]):
                                 for model_dict in dm_dict['data_models']:
                                     dm_model = DMModel(
                                         external_id=model_dict['external_id'],
-                                        views=model_dict.get('views')
+                                        views=model_dict.get('views'),
+                                        version=model_dict.get('version')
                                     )
                                     dm_models.append(dm_model)
 
