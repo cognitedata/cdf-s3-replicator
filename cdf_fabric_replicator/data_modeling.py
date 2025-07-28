@@ -149,6 +149,10 @@ class DataModelingReplicator(Extractor):
         Always uses explicit data model version numbers.
         """
         for dm_cfg in self.config.data_modeling:
+            if self.stop_event.is_set():
+                self.logger.info("Stop requested during space processing")
+                return
+
             if dm_cfg.data_models:
                 for model in dm_cfg.data_models:
                     self._model_xid = model.external_id
