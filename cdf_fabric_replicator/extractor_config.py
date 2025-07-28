@@ -120,13 +120,13 @@ class CdfExtractorConfig(Extractor[Config]):
 
                 return config
             else:
-                logging.getLogger("retrieve_pipeline_config_standalone").warning(
+                logging.getLogger("retrieve_pipeline_config").warning(
                     "No config found or config is empty"
                 )
                 return config
 
         except Exception as e:
-            logging.getLogger("retrieve_pipeline_config_standalone").error(
+            logging.getLogger("retrieve_pipeline_config").error(
                 f"Failed to retrieve pipeline config: {e}"
             )
             raise
