@@ -13,12 +13,12 @@ from integration_steps.cdf_steps import (
     remove_events_from_cdf,
     delete_event_state_store_in_cdf,
 )
-from integration_steps.fabric_steps import (
-    assert_events_data_in_fabric,
+from integration_steps.s3_steps import (
+    assert_events_data_in_s3,
     delete_delta_table_data,
 )
-from cdf_fabric_replicator.metrics import Metrics
-from cdf_fabric_replicator.event import EventsReplicator
+from cdf_s3_replicator.metrics import Metrics
+from cdf_s3_replicator.event import EventsReplicator
 
 EVENT_DURATION = 60000  # 1 minute
 CDF_RETRIES = 5
@@ -117,5 +117,5 @@ def test_events_service(
     # When the events replicator runs
     test_event_replicator.process_events()
 
-    # Then events will be available in fabric
-    assert_events_data_in_fabric(events_path, events_dataframe, azure_credential)
+    # Then events will be available in s3
+    assert_events_data_in_s3(events_path, events_dataframe, azure_credential)

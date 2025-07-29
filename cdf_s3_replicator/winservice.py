@@ -17,18 +17,18 @@ from cognite.extractorutils.threading import CancellationToken
 
 from cognite.extractorutils.metrics import safe_get
 
-from cdf_fabric_replicator.time_series import TimeSeriesReplicator
-from cdf_fabric_replicator.data_modeling import DataModelingReplicator
-from cdf_fabric_replicator.extractor import CdfFabricExtractor
-from cdf_fabric_replicator.event import EventsReplicator
+from cdf_s3_replicator.time_series import TimeSeriesReplicator
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
+from cdf_s3_replicator.extractor import CdfS3Extractor
+from cdf_s3_replicator.event import EventsReplicator
 
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator.metrics import Metrics
 
 
 # Should be the same as product_short_name in installer/setup-config.json
-service_name = "FabricConnector"
-service_display_name = "Cognite Fabric Connector"
-service_description = "Connector to Fabric and exchange data with CDF"
+service_name = "S3Connector"
+service_display_name = "Cognite S3 Connector"
+service_description = "Connector to S3 and exchange data with CDF"
 
 
 class WindowsService(win32serviceutil.ServiceFramework):
@@ -79,7 +79,7 @@ class WindowsService(win32serviceutil.ServiceFramework):
             ) as ts_replicator:
                 worker_list.append(threading.Thread(target=ts_replicator.run))
 
-            with CdfFabricExtractor(
+            with CdfS3Extractor(
                 metrics=safe_get(Metrics),
                 stop_event=self.cancellation_token.create_child_token(),
                 override_config_path=config_file_path,

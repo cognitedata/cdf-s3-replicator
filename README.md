@@ -1,26 +1,26 @@
-# CDF Fabric replicator
+# CDF S3 replicator
 
-The **CDF Fabric replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to replicate data to and from **Microsoft Fabric** (Fabric).
+The **CDF S3 replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to replicate data to and from **Microsoft S3** (S3).
 
 The replicator consists of four services:
-- **Time series replicator** - Copies time series data from CDF to Fabric.
-- **Data model replicator** - Copies data model nodes and edges from CDF to Fabric.
-- **Event replicator** - Copies event data from CDF to Fabric.
-- **Fabric data extractor** - Copies time series, events, and files from Fabric to CDF.
+- **Time series replicator** - Copies time series data from CDF to S3.
+- **Data model replicator** - Copies data model nodes and edges from CDF to S3.
+- **Event replicator** - Copies event data from CDF to S3.
+- **S3 data extractor** - Copies time series, events, and files from S3 to CDF.
 
-All four services will run concurrently during the execution of the CDF Fabric Replicator program. The services use one state store in CDF's raw storage to maintain checkpoints of when the latest data was copied, so the services can be started and stopped and will be able to pick back up where they left off.
+All four services will run concurrently during the execution of the CDF S3 Replicator program. The services use one state store in CDF's raw storage to maintain checkpoints of when the latest data was copied, so the services can be started and stopped and will be able to pick back up where they left off.
 
-This documentation describes two different ways to run the replicator. The first scenario supports [local development](#local-development-with-cdf-fabric-replicator) and describes how you would run the replicator on the command line or via **Visual Studio Code** (VSCode) to test or modify the code. The second scenario is [production](#building-and-deploying-with-docker-on-aks) that describes how you would build and deploy to **Azure Kubernetes Service** to support the data replication in production.
+This documentation describes two different ways to run the replicator. The first scenario supports [local development](#local-development-with-cdf-s3-replicator) and describes how you would run the replicator on the command line or via **Visual Studio Code** (VSCode) to test or modify the code. The second scenario is [production](#building-and-deploying-with-docker-on-aks) that describes how you would build and deploy to **Azure Kubernetes Service** to support the data replication in production.
 
 ## Table of Contents
-- [CDF Fabric replicator](#cdf-fabric-replicator)
+- [CDF S3 replicator](#cdf-s3-replicator)
   - [Table of Contents](#table-of-contents)
-  - [Local Development with CDF Fabric replicator](#local-development-with-cdf-fabric-replicator)
+  - [Local Development with CDF S3 replicator](#local-development-with-cdf-s3-replicator)
   - [Setting up Data Point Subscriptions](#setting-up-data-point-subscriptions)
   - [Environment Variables](#environment-variables)
     - [CDF Variables](#cdf-variables)
-    - [Fabric Variables](#fabric-variables)
-    - [Fabric Extractor Variables](#fabric-extractor-variables)
+    - [S3 Variables](#s3-variables)
+    - [S3 Extractor Variables](#s3-extractor-variables)
     - [Integration Test Variables](#integration-test-variables)
   - [Config YAML](#config-yaml)
     - [Remote config](#remote-config)
@@ -47,11 +47,11 @@ This documentation describes two different ways to run the replicator. The first
     - [Github Action](#github-action)
     - [Best Practices for Adding Tests](#best-practices-for-adding-tests)
 
-## Local Development with CDF Fabric replicator
+## Local Development with CDF S3 replicator
 
-Follow these instructions for doing Local Development with CDF Fabric replicator:
+Follow these instructions for doing Local Development with CDF S3 replicator:
 
-1. Clone repo: `git clone https://github.com/cognitedata/cdf-fabric-replicator.git`
+1. Clone repo: `git clone https://github.com/cognitedata/cdf-s3-replicator.git`
 2. Install Python (3.10, 3.11, or 3.12).
 3. Install [Poetry](https://python-poetry.org/docs/#installation).
     > Note: Poetry should be installed in a virtual environment, see the [installation instructions](https://python-poetry.org/docs/#installation) for more details.
@@ -80,26 +80,26 @@ The CDF variables define the location of the project in Cognite Data Fusion. In 
 - `COGNITE_EXTRACTION_PIPELINE`: The extractor pipeline in CDF for the replicator. [Learn more about configuring extractors remotely](https://docs.cognite.com/cdf/integration/guides/interfaces/configure_integrations).
 - `COGNITE_TOKEN_SCOPES`: OAUTH access scope to be granted to the token. i.e. `${COGNITE_BASE_URL}/.default`.
 
-### Fabric Variables
+### S3 Variables
 
-Fabric Variables define where in Microsoft Fabric that contextualized data is written. Data is written in Delta format, which requires a Fabric Lakehouse. Tables will be created automatically.
+S3 Variables define where in Microsoft S3 that contextualized data is written. Data is written in Delta format, which requires a S3 Lakehouse. Tables will be created automatically.
 
-- `LAKEHOUSE_ABFSS_PREFIX`: The prefix for the Azure Blob File System Storage (ABFSS) path. Should match pattern `abfss://<workspace_id>@msit-onelake.dfs.fabric.microsoft.com/<lakehouse_id>`. Get this value by selecting "Properties" on your Lakehouse Tables location and copying "ABFSS path".
-- `DPS_TABLE_NAME`: The name of the table where data point values and timestamps should be stored in Fabric. The replicator will create the table if it does not exist.
-- `TS_TABLE_NAME`: The name of the table where time series metadata should be stored in Fabric. The replicator will create the table if it does not exist.
-- `EVENT_TABLE_NAME`: The name of the table where event data should be stored in Fabric. The replicator will create the table if it does not exist.
+- `LAKEHOUSE_ABFSS_PREFIX`: The prefix for the Azure Blob File System Storage (ABFSS) path. Should match pattern `abfss://<workspace_id>@msit-onelake.dfs.s3.microsoft.com/<lakehouse_id>`. Get this value by selecting "Properties" on your Lakehouse Tables location and copying "ABFSS path".
+- `DPS_TABLE_NAME`: The name of the table where data point values and timestamps should be stored in S3. The replicator will create the table if it does not exist.
+- `TS_TABLE_NAME`: The name of the table where time series metadata should be stored in S3. The replicator will create the table if it does not exist.
+- `EVENT_TABLE_NAME`: The name of the table where event data should be stored in S3. The replicator will create the table if it does not exist.
 
-### Fabric Extractor Variables
+### S3 Extractor Variables
 
-Fabric Extractor Variables defines the Lakehouse and tables where raw data lands before being ingested into CDF.
+S3 Extractor Variables defines the Lakehouse and tables where raw data lands before being ingested into CDF.
 
-- `EXTRACTOR_EVENT_PATH`: The table path for the events table in a Fabric lakehouse. It's the relative path after the ABFSS prefix, i.e. `Tables/RawEvents`.
+- `EXTRACTOR_EVENT_PATH`: The table path for the events table in a S3 lakehouse. It's the relative path after the ABFSS prefix, i.e. `Tables/RawEvents`.
 - `EXTRACTOR_EVENT_INCREMENTAL_FIELD`: The column used for incremental reads from the table. Typically a timestamp or counter column.
-- `EXTRACTOR_FILE_PATH`: The single file path or directory of the files in a Fabric lakehouse. It's the relative path after the ABFSS prefix, i.e. `Files` or `Files/Tanks.png`.
-- `EXTRACTOR_RAW_TS_PATH`: The file path for the raw timeseries table in a Fabric lakehouse. It's the relative path after the ABFSS prefix i.e. `Tables/RawTS`.
+- `EXTRACTOR_FILE_PATH`: The single file path or directory of the files in a S3 lakehouse. It's the relative path after the ABFSS prefix, i.e. `Files` or `Files/Tanks.png`.
+- `EXTRACTOR_RAW_TS_PATH`: The file path for the raw timeseries table in a S3 lakehouse. It's the relative path after the ABFSS prefix i.e. `Tables/RawTS`.
 - `EXTRACTOR_DATASET_ID`: Specifies the ID of the extractor dataset when the data lands in CDF.
 - `EXTRACTOR_TS_PREFIX`: Specifies the prefix for the extractor timeseries when the data lands in CDF.
-- `EXTRACTOR_RAW_TABLE_PATH`: Specifies the table path a table in Fabric lakehouse which should written into CDF RAW. Default config supports one table, multiple are needed the `example_config.yaml` needs to be modified to add more tables.
+- `EXTRACTOR_RAW_TABLE_PATH`: Specifies the table path a table in S3 lakehouse which should written into CDF RAW. Default config supports one table, multiple are needed the `example_config.yaml` needs to be modified to add more tables.
 - `EXTRACTOR_RAW_INCREMENTAL_FIELD`: The column used for incremental reads from the table. Typically a timestamp or counter column.
 - `EXTRACTOR_RAW_TABLE_NAME`: Name of the table in CDF RAW to write to.
 - `EXTRACTOR_RAW_DB_NAME`: Name of the database in CDF RAW to write to.
@@ -117,23 +117,23 @@ Integration Test Variables are only used for integration tests. See [Testing](#t
 
 There are additional configuration values that are defined in `example_config.yaml` but do not have environment variables associated with them:
 - `extractor: subscription-batch-size` - Sets the batch size for the amount of data points to retrieve at a time from the CDF subscription in the Time Series Replicator.
-- `extractor: ingest-batch-size` - Sets the batch size for the amount of data points to write at a time to the Fabric Lakehouse in the Time Series Replicator.
-- `source: read_batch_size` - Sets the batch size for the number of rows to retrieve at a time from the Fabric Lakehouse in the Fabric Extractor.
+- `extractor: ingest-batch-size` - Sets the batch size for the amount of data points to write at a time to the S3 Lakehouse in the Time Series Replicator.
+- `source: read_batch_size` - Sets the batch size for the number of rows to retrieve at a time from the S3 Lakehouse in the S3 Extractor.
 - `event: batch_size` - Sets the batch size for the number of events to retrieve at a time from CDF in the Events Replicator.
 
 
 ## Config YAML
 The replicator reads its configuration from a YAML file specified in the run command. You can configure your own YAML file based on the one in [example_config.yaml](example_config.yaml) in the repo. That configuration file uses the environment variables in `.env`, the configuration can also be set using hard-coded values.
 
-`subscriptions` and `data_modeling` configurations are a list, so you can configure multiple data point subscriptions or data modeling spaces to replicate into Fabric.
-`raw_tables` is also a list, to be able configure multiple tables in Fabric to replicate into CDF RAW.
+`subscriptions` and `data_modeling` configurations are a list, so you can configure multiple data point subscriptions or data modeling spaces to replicate into S3.
+`raw_tables` is also a list, to be able configure multiple tables in S3 to replicate into CDF RAW.
 
 ### Remote config
 The [example_config.yaml](example_config.yaml) contains all configuration required to run the replicator. Alternatively [config_remote.yaml](build/config_remote.yaml) is provided to point to an Extraction Pipeline within a CDF project that contains the full configuration file. This allows a Docker image to be built and deployed with a minimal configuration, and lets you make changes to the full configuration without rebuilding the image. [Learn more about configuring extractors remotely](https://docs.cognite.com/cdf/integration/guides/interfaces/configure_integrations).
 
 ## Running with Poetry
 
-To run the `cdf_fabric_replicator` application, you can use Poetry, a dependency management and packaging tool for Python.
+To run the `cdf_s3_replicator` application, you can use Poetry, a dependency management and packaging tool for Python.
 
 First, make sure you have Poetry installed on your system. If not, you can install it by following the instructions in the [Poetry documentation](https://python-poetry.org/docs/#installation).
 
@@ -148,7 +148,7 @@ poetry install
 
 Finally, run the replicator:
 ```bash
-poetry run cdf_fabric_replicator <name of config file>
+poetry run cdf_s3_replicator <name of config file>
 ```
 
 ### Visual Studio Code
@@ -192,7 +192,7 @@ docker run -i -t <image-name> --platform linux/arm64
 
 #### Creating an AKS Cluster with Managed Identity
 
-Azure Kubernetes Service (AKS) can use Azure Managed Identities to interact with other Azure services. This eliminates the need to manage service principals and rotate credentials. The Fabric Replicator requires managed identity on AKS to be enabled to run.
+Azure Kubernetes Service (AKS) can use Azure Managed Identities to interact with other Azure services. This eliminates the need to manage service principals and rotate credentials. The S3 Replicator requires managed identity on AKS to be enabled to run.
 
 To create an AKS cluster with Managed Identity and an attached ACR, you can use the Azure CLI:
 
@@ -202,7 +202,7 @@ az aks create -g MyResourceGroup -n MyManagedCluster --generate-ssh-keys --attac
 
 #### Build Docker to Push to ACR
 
-Note: When you build the CDF Fabric Replicator from docker, the docker image is configured to use the config located in the Extraction Pipeline in CDF. You will need to configure the yaml file in the Extraction Pipeline in CDF.
+Note: When you build the CDF S3 Replicator from docker, the docker image is configured to use the config located in the Extraction Pipeline in CDF. You will need to configure the yaml file in the Extraction Pipeline in CDF.
 
 First, you should build your your docker image locally:
 
@@ -255,7 +255,7 @@ image:
 ```
 
 ##### Environment Variables
-The environmental variables should be filled in with values that correspond to your CDF and Lakehouse environment, these allow the CDF Fabric Replicator to run.
+The environmental variables should be filled in with values that correspond to your CDF and Lakehouse environment, these allow the CDF S3 Replicator to run.
 
 ```yaml
 env:
@@ -307,7 +307,7 @@ env:
 To deploy your application to your Kubernetes cluster run the following command:
 
 ```bash
-helm install <MYAppName> ./cdf-fabric-replicator-chart
+helm install <MYAppName> ./cdf-s3-replicator-chart
 ```
 
 To verify the status of your deployment run:
@@ -326,12 +326,12 @@ kubectl get pods
 4. Run `poetry run pytest tests/integration/test_helm.py -s` to run the test_helm_chart_deployment test.
 
 ## Testing
-To maintain the quality and integrity of the `cdf-fabric-replicator` codebase, we have tests utilizing the [pytest](https://docs.pytest.org/en/8.2.x/) framework that run as part of the `test` Github Action.  There are two kinds of tests:
-- **Unit** - Unit tests cover a single module or function in the code and do not require any external connections to run.  Unit test files are 1 to 1 with files under `cdf-fabric-replicator`.
-- **Integration** - Integration tests cover interactions between modules as part of a service and connect to CDF and Fabric as part of the test.  Integration test files are 1 to 1 with the services of the `cdf-fabric-replicator` such as the Timeseries Replicator, Fabric Extractor, etc
+To maintain the quality and integrity of the `cdf-s3-replicator` codebase, we have tests utilizing the [pytest](https://docs.pytest.org/en/8.2.x/) framework that run as part of the `test` Github Action.  There are two kinds of tests:
+- **Unit** - Unit tests cover a single module or function in the code and do not require any external connections to run.  Unit test files are 1 to 1 with files under `cdf-s3-replicator`.
+- **Integration** - Integration tests cover interactions between modules as part of a service and connect to CDF and S3 as part of the test.  Integration test files are 1 to 1 with the services of the `cdf-s3-replicator` such as the Timeseries Replicator, S3 Extractor, etc
 
 ### Setting Up Tests
-***Before running tests, ensure you have a CDF project and a Fabric workspace dedicated for testing. The integration tests create and delete CDF objects and data and require a clean environment for accurate assertions.  You risk losing data if you run these tests in a dev/production environment.***
+***Before running tests, ensure you have a CDF project and a S3 workspace dedicated for testing. The integration tests create and delete CDF objects and data and require a clean environment for accurate assertions.  You risk losing data if you run these tests in a dev/production environment.***
 
 #### Environment Variables
 Environment variables are not needed to run the unit tests, but are needed for the integration tests both to run locally and to run in the Github Action.
@@ -366,7 +366,7 @@ fail_under = 90
 ### Github Action
 The Github action runs the unit tests for both Python 3.10 and 3.11 using `poetry`.  This action will run for every pull request created for the repo.  *As integration tests are not part of the pull request actions, please ensure that the integration tests of the service related to your code changes passes successfully locally before making a PR.*
 
-***Note: Integration tests will not pass for non-members of the `cdf-fabric-replicator` repository due to repository secret access for environment variables.***
+***Note: Integration tests will not pass for non-members of the `cdf-s3-replicator` repository due to repository secret access for environment variables.***
 
 ### Best Practices for Adding Tests
 - If a fixture can be shared across multiple tests, add it to the `conftest.py`.  Otherwise, keep fixtures that are specific to a single test in the test file.  For example, the Cognite SDK Client belongs in `conftest.py` as all the integration tests use it to seed test data.
@@ -374,5 +374,5 @@ The Github action runs the unit tests for both Python 3.10 and 3.11 using `poetr
 - Individual unit tests should not take longer than a second to run, excluding test collection.  Additionally, while integration tests take longer, pay attention to increases in test run times, as that may indicate that inefficient code was introduced.
 - Limit mocks to external connections and complex functions that should be covered in separate tests.  For example, mock calls to the Cognite API using the client, but don't mock simple helper functions in the code.
 - For unit tests, make sure the assertions that you add for function calls are useful.  For example, ensuring that the state store was synchronized after a data write is a useful assertion, whereas asserting that a helper method was called may become stale after a refactor.
-- Add integration tests when a new feature or scenario is introduced to the codebase that wasn't captured in the integration tests before.  For example, add a test if a new data type from CDF or Fabric is being replicated.  If a code addition is an expansion of an existing feature, consider if adding more parameters would cover the scenario.
+- Add integration tests when a new feature or scenario is introduced to the codebase that wasn't captured in the integration tests before.  For example, add a test if a new data type from CDF or S3 is being replicated.  If a code addition is an expansion of an existing feature, consider if adding more parameters would cover the scenario.
 

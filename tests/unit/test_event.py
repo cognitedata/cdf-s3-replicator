@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import patch, Mock
-from cdf_fabric_replicator.event import EventsReplicator
+from cdf_s3_replicator.event import EventsReplicator
 from cognite.client.data_classes import Event
 import pyarrow as pa
 from deltalake.exceptions import DeltaError, TableNotFoundError
@@ -11,7 +11,7 @@ EVENT_BATCH_SIZE = 1
 
 @pytest.fixture()
 def test_event_replicator():
-    with patch("cdf_fabric_replicator.event.DefaultAzureCredential") as mock_credential:
+    with patch("cdf_s3_replicator.event.DefaultAzureCredential") as mock_credential:
         mock_credential.return_value.get_token.return_value = Mock(token="token")
         event_replicator = EventsReplicator(metrics=Mock(), stop_event=Mock())
         event_replicator.config = Mock(
@@ -51,7 +51,7 @@ def event():
     }
 
 
-@patch("cdf_fabric_replicator.event.EventsReplicator.process_events")
+@patch("cdf_s3_replicator.event.EventsReplicator.process_events")
 def test_run(mock_process_events, test_event_replicator):
     test_event_replicator.stop_event = Mock(is_set=Mock(side_effect=[False, True]))
     test_event_replicator.run()
@@ -70,8 +70,8 @@ def test_run_no_event_config(test_event_replicator):
 @pytest.mark.parametrize(
     "last_created_time, event_query_time", [(None, 1), (1714685606, 1714685607)]
 )
-@patch("cdf_fabric_replicator.event.write_deltalake")
-@patch("cdf_fabric_replicator.event.DeltaTable")
+@patch("cdf_s3_replicator.event.write_deltalake")
+@patch("cdf_s3_replicator.event.DeltaTable")
 def test_process_events_new_table(
     mock_deltatable,
     mock_write_deltalake,
@@ -118,12 +118,12 @@ def test_process_events_new_table(
         schema_mode="merge",
         storage_options={
             "bearer_token": "token",
-            "use_fabric_endpoint": "true",
+            "use_s3_endpoint": "true",
         },
     )
 
 
-@patch("cdf_fabric_replicator.event.DeltaTable")
+@patch("cdf_s3_replicator.event.DeltaTable")
 def test_process_events_delta_error(mock_deltatable, event, test_event_replicator):
     # Set up empty state and cognite client events iterator
     test_event_replicator.state_store.get_state.return_value = [(None, None)]
@@ -140,8 +140,8 @@ def test_process_events_delta_error(mock_deltatable, event, test_event_replicato
     test_event_replicator.logger.error.call_count == 2
 
 
-@patch("cdf_fabric_replicator.event.pa.Table")
-@patch("cdf_fabric_replicator.event.DeltaTable")
+@patch("cdf_s3_replicator.event.pa.Table")
+@patch("cdf_s3_replicator.event.DeltaTable")
 def test_write_events_to_lakehouse_tables_merge(
     mock_deltatable, mock_pa_table, test_event_replicator
 ):
@@ -166,7 +166,7 @@ def test_write_events_to_lakehouse_tables_merge(
         abfss_path,
         storage_options={
             "bearer_token": "token",
-            "use_fabric_endpoint": "true",
+            "use_s3_endpoint": "true",
         },
     )
 

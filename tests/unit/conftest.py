@@ -1,6 +1,6 @@
 import pytest
 from cognite.extractorutils.configtools import load_yaml
-from cdf_fabric_replicator.config import Config
+from cdf_s3_replicator.config import Config
 
 
 @pytest.fixture(scope="session")
@@ -23,7 +23,7 @@ def config_raw():
             scopes:
                 - https://api.cognitedata.com/.default
         extraction-pipeline:
-            external-id: test-fabric-extractor
+            external-id: test-s3-extractor
 
     #Extractor config
     extractor:

@@ -5,8 +5,8 @@ from time import sleep
 from unittest.mock import Mock
 from cognite.extractorutils.base import CancellationToken
 from cognite.extractorutils.metrics import safe_get
-from cdf_fabric_replicator.metrics import Metrics
-from cdf_fabric_replicator.time_series import TimeSeriesReplicator
+from cdf_s3_replicator.metrics import Metrics
+from cdf_s3_replicator.time_series import TimeSeriesReplicator
 from tests.integration.integration_steps.time_series_generation import (
     generate_timeseries_set,
     TimeSeriesGeneratorArgs,
@@ -21,11 +21,11 @@ from tests.integration.integration_steps.cdf_steps import (
     assert_subscription_created_in_cdf,
 )
 from tests.integration.integration_steps.service_steps import run_replicator
-from tests.integration.integration_steps.fabric_steps import (
+from tests.integration.integration_steps.s3_steps import (
     delete_delta_table_data,
-    assert_timeseries_data_in_fabric,
+    assert_timeseries_data_in_s3,
 )
-from cdf_fabric_replicator import subscription
+from cdf_s3_replicator import subscription
 
 
 @pytest.fixture(scope="function")
@@ -80,7 +80,7 @@ def lakehouse_timeseries_path(azure_credential):
     delete_delta_table_data(azure_credential, lakehouse_timeseries_path)
 
 
-# Test for Timeseries data integration service between CDF and Fabric
+# Test for Timeseries data integration service between CDF and S3
 @pytest.mark.parametrize(
     "time_series",
     [TimeSeriesGeneratorArgs(["int_test_fabcd_hist:mtu:39tic1091.pv"], 10)],
@@ -108,11 +108,11 @@ def test_timeseries_data_integration_service(
     )
     # Push data points to CDF
     pushed_data = push_data_to_cdf(time_series, cognite_client)
-    # Run replicator for data point subscription between CDF and Fabric
+    # Run replicator for data point subscription between CDF and S3
     run_replicator(test_replicator)
-    # Assert timeseries data is populated in a Fabric lakehouse
+    # Assert timeseries data is populated in a S3 lakehouse
     for ts_external_id, data_points in pushed_data.items():
-        assert_timeseries_data_in_fabric(
+        assert_timeseries_data_in_s3(
             ts_external_id, data_points, lakehouse_timeseries_path, azure_credential
         )
     # Assert state store is populated in CDF

@@ -7,7 +7,7 @@
   "properties": {
     "time-series-prefix": {
         "type": "string",
-        "description": "Legacy Fabric prefix (ignored by S3 writer)."
+        "description": "Legacy S3 prefix (ignored by S3 writer)."
     },
     "s3": {
       "type": "object",

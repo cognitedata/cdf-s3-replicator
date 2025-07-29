@@ -8,9 +8,9 @@ from azure.identity import DefaultAzureCredential
 from deltalake import write_deltalake, DeltaTable
 from deltalake.exceptions import DeltaError, TableNotFoundError
 import pyarrow as pa
-from cdf_fabric_replicator import __version__
-from cdf_fabric_replicator.config import Config
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator import __version__
+from cdf_s3_replicator.config import Config
+from cdf_s3_replicator.metrics import Metrics
 from cognite.client.data_classes import RowList
 from datetime import datetime
 
@@ -18,8 +18,8 @@ from datetime import datetime
 class RawTableReplicator(Extractor):
     def __init__(self, metrics: Metrics, stop_event: CancellationToken) -> None:
         super().__init__(
-            name="cdf_fabric_replicator_raw",
-            description="CDF Fabric Replicator",
+            name="cdf_s3_replicator_raw",
+            description="CDF S3 Replicator",
             config_class=Config,
             metrics=metrics,
             use_default_state_store=False,
@@ -76,7 +76,7 @@ class RawTableReplicator(Extractor):
                     db_name=raw_table.db_name,
                     table_name=raw_table.table_name,
                     min_last_updated_time=last_updated_time,
-                    limit=self.config.extractor.fabric_ingest_batch_size,
+                    limit=self.config.extractor.s3_ingest_batch_size,
                 )
                 if len(rows) > 0:
                     try:
@@ -121,7 +121,7 @@ class RawTableReplicator(Extractor):
             data = pa.Table.from_pylist(rows_dict)
             storage_options = {
                 "bearer_token": token.token,
-                "use_fabric_endpoint": "true",
+                "use_s3_endpoint": "true",
             }
 
             try:

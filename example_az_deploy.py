@@ -2,7 +2,7 @@
 import os
 from configparser import ConfigParser
 
-# This script will deploy the cdf-fabric-replicator container to Azure Container Instances.
+# This script will deploy the cdf-s3-replicator container to Azure Container Instances.
 
 # To configure the script, create a .env file with the following and define the values with the appropriate values for your environment:
 
@@ -29,7 +29,7 @@ from configparser import ConfigParser
 # CR_PERSONAL_ACCESS_TOKEN=
 
 # The COGNITE_ variables are used to specify the settings for the Cognite API.
-# The LAKEHOUSE_ variables are used to specify the settings for the target Fabric Onelake instance.
+# The LAKEHOUSE_ variables are used to specify the settings for the target S3 Onelake instance.
 # The AZ_ variables are used to specify the settings for the target Azure Container Instance.
 # The CR_ variables are used to specify the settings for the container registry for the pre-built container image.
 

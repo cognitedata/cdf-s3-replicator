@@ -120,7 +120,7 @@ jobs:
         run: pip install uv
 
       - name: Isolate target binary files
-        run: cp -r cdf_fabric_replicator sbom
+        run: cp -r cdf_s3_replicator sbom
 
       - name: Remove unnecessary files
         run: find sbom -iname __pycache__ -type d -exec rm -r {} +
@@ -129,7 +129,7 @@ jobs:
         run: uv export --format requirements-txt --output-file sbom/requirements.txt
 
       - name: Generate sbom
-        run: sbom-tool generate -b sbom -bc sbom -pn fabric-connector -pv ${{ needs.create-version.outputs.version }} -ps Cognite -nsb https://sbom.cognite.com
+        run: sbom-tool generate -b sbom -bc sbom -pn s3-connector -pv ${{ needs.create-version.outputs.version }} -ps Cognite -nsb https://sbom.cognite.com
 
       - name: Move generated json
         run: mv sbom/_manifest/spdx_2.2/* .
@@ -185,7 +185,7 @@ jobs:
         uses: microsoft/setup-msbuild@v1.3
 
       - name: build windows exe
-        run: cogex build --spec fabric_connector.spec win_service.spec
+        run: cogex build --spec s3_connector.spec win_service.spec
         env:
           PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
 
@@ -214,8 +214,8 @@ jobs:
 
       - name: copy artifacts to buildoutput
         run: |
-          cp ..\dist\fabric-connector-standalone-${{ needs.create-version.outputs.version }}-win32.exe buildoutput\fabric-connector.exe
-          cp ..\dist\fabric-connector-winservice-${{ needs.create-version.outputs.version }}-win32.exe buildoutput\fabric-connector-winservice.exe
+          cp ..\dist\s3-connector-standalone-${{ needs.create-version.outputs.version }}-win32.exe buildoutput\s3-connector.exe
+          cp ..\dist\s3-connector-winservice-${{ needs.create-version.outputs.version }}-win32.exe buildoutput\s3-connector-winservice.exe
         working-directory: ./installer
 
       - name: build msi
@@ -223,7 +223,7 @@ jobs:
         working-directory: installer
 
       - name: move msi
-        run: mv .\installer\bin\Release\FabricConnectorSetup.msi .\uploads\fabric-connector-${{ needs.create-version.outputs.version }}.msi
+        run: mv .\installer\bin\Release\S3ConnectorSetup.msi .\uploads\s3-connector-${{ needs.create-version.outputs.version }}.msi
 
       - name: Sign msi
         if: ${{ needs.current-branch.outputs.current-branch == 'main' }}
@@ -236,12 +236,12 @@ jobs:
           KEYPAIR_ALIAS: ${{ secrets.CODE_SIGNING_KEYPAIR_ALIAS }}
         uses: cognitedata/code-sign-action/@v3
         with:
-          path-to-binary: .\fabric-connector-${{ needs.create-version.outputs.version }}.msi
+          path-to-binary: .\s3-connector-${{ needs.create-version.outputs.version }}.msi
 
       - name: Zip it up
         run: |
-          7z a .\uploads\fabric-connector-standalone-${{ needs.create-version.outputs.version }}-win32.zip .\dist\fabric-connector-standalone-${{ needs.create-version.outputs.version }}-win32.exe manifest.spdx.json manifest.spdx.json.sha256 .\config_examples\example-*.yaml
-          7z a .\uploads\fabric-connector-winservice-${{ needs.create-version.outputs.version }}-win32.zip .\dist\fabric-connector-winservice-${{ needs.create-version.outputs.version }}-win32.exe manifest.spdx.json manifest.spdx.json.sha256 .\config_examples\example-*.yaml
+          7z a .\uploads\s3-connector-standalone-${{ needs.create-version.outputs.version }}-win32.zip .\dist\s3-connector-standalone-${{ needs.create-version.outputs.version }}-win32.exe manifest.spdx.json manifest.spdx.json.sha256 .\config_examples\example-*.yaml
+          7z a .\uploads\s3-connector-winservice-${{ needs.create-version.outputs.version }}-win32.zip .\dist\s3-connector-winservice-${{ needs.create-version.outputs.version }}-win32.exe manifest.spdx.json manifest.spdx.json.sha256 .\config_examples\example-*.yaml
 
       - name: Upload artifacts
         if: ${{ needs.current-branch.outputs.current-branch == 'main' && needs.should-release.outputs.should-release == 0}}
@@ -283,7 +283,7 @@ jobs:
         run: cd config_examples && bash build_examples.sh
 
       - name: Build linux executable
-        run: cogex build --spec fabric_connector.spec
+        run: cogex build --spec s3_connector.spec
 
       - name: Download sbom artefacts
         uses: actions/download-artifact@v4
@@ -296,15 +296,15 @@ jobs:
 
       - name: Zip it up
         run: |
-          mv dist/fabric-connector-standalone-${{ needs.create-version.outputs.version }}-linux .
-          zip -r fabric-connector-standalone-${{ needs.create-version.outputs.version }}-linux.zip fabric-connector-standalone-${{ needs.create-version.outputs.version }}-linux config_examples/example-*.yaml manifest.spdx.json*
+          mv dist/s3-connector-standalone-${{ needs.create-version.outputs.version }}-linux .
+          zip -r s3-connector-standalone-${{ needs.create-version.outputs.version }}-linux.zip s3-connector-standalone-${{ needs.create-version.outputs.version }}-linux config_examples/example-*.yaml manifest.spdx.json*
 
       - name: Upload artifacts
         if: ${{ needs.current-branch.outputs.current-branch == 'main' && needs.should-release.outputs.should-release == 0}}
         uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: fabric-connector-standalone-${{ needs.create-version.outputs.version }}-linux.zip
+          path: s3-connector-standalone-${{ needs.create-version.outputs.version }}-linux.zip
 
   build-docker-image:
     runs-on: ubuntu-latest
@@ -332,14 +332,14 @@ jobs:
         python3 -m pip install --upgrade pip cognite-extractor-manager==2.* uv 
 
     - name: Build Docker image
-      run: docker build -t cognite/fabric-connector:${{ needs.create-version.outputs.version }} -f build/Dockerfile --load .
+      run: docker build -t cognite/s3-connector:${{ needs.create-version.outputs.version }} -f build/Dockerfile --load .
 
     - name: export docker image
-      run: docker save -o fabric-connector.tar cognite/fabric-connector:${{ needs.create-version.outputs.version }}
+      run: docker save -o s3-connector.tar cognite/s3-connector:${{ needs.create-version.outputs.version }}
 
     - name: upload artifact
       if: ${{ needs.current-branch.outputs.current-branch == 'main' && needs.should-release.outputs.should-release == 0 }}
       uses: actions/upload-artifact@v4
       with:
         name: docker image
-        path: ./fabric-connector.tar
+        path: ./s3-connector.tar

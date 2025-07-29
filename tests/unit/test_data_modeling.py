@@ -4,8 +4,8 @@ from unittest.mock import patch, Mock
 from collections import UserDict
 import pyarrow as pa
 
-from cdf_fabric_replicator.data_modeling import DataModelingReplicator
-from cdf_fabric_replicator.config import Config, DataModelingConfig
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
+from cdf_s3_replicator.config import Config, DataModelingConfig
 
 from cognite.client.data_classes.data_modeling.instances import Node, Edge
 from cognite.client.data_classes.data_modeling import DirectRelationReference
@@ -28,7 +28,7 @@ from deltalake.exceptions import DeltaError
 @pytest.fixture
 def test_data_modeling_replicator():
     with patch(
-        "cdf_fabric_replicator.data_modeling.DefaultAzureCredential"
+        "cdf_s3_replicator.data_modeling.DefaultAzureCredential"
     ) as mock_credential:
         mock_credential.return_value.get_token.return_value = Mock(token="test_token")
         replicator = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
@@ -296,7 +296,7 @@ def query_result_empty():
 @pytest.fixture
 def mock_write_deltalake(mocker):
     yield mocker.patch(
-        "cdf_fabric_replicator.data_modeling.DataModelingReplicator.write_instances_to_lakehouse_tables",
+        "cdf_s3_replicator.data_modeling.DataModelingReplicator.write_instances_to_lakehouse_tables",
         return_value=None,
     )
 
@@ -324,7 +324,7 @@ def replicator_config(mock_data_modeling_config):
 
 
 class TestDataModelingReplicator:
-    @patch("cdf_fabric_replicator.data_modeling.time.sleep")
+    @patch("cdf_s3_replicator.data_modeling.time.sleep")
     def test_run(
         self, mock_sleep, mock_data_modeling_config, test_data_modeling_replicator
     ):
@@ -665,7 +665,7 @@ class TestDataModelingReplicator:
             expected_edge_instance, lakehouse_prefix
         )
 
-    @patch("cdf_fabric_replicator.data_modeling.write_deltalake")
+    @patch("cdf_s3_replicator.data_modeling.write_deltalake")
     def test_write_instances_to_lakehouse_tables(
         self,
         mock_deltalake_write,
@@ -688,11 +688,11 @@ class TestDataModelingReplicator:
             schema_mode="merge",
             storage_options={
                 "bearer_token": "test_token",
-                "use_fabric_endpoint": "true",
+                "use_s3_endpoint": "true",
             },
         )
 
-    @patch("cdf_fabric_replicator.data_modeling.write_deltalake")
+    @patch("cdf_s3_replicator.data_modeling.write_deltalake")
     def test_write_instances_to_lakehouse_tables_delta_error(
         self,
         mock_deltalake_write,

@@ -67,7 +67,7 @@ def assert_helm_deployed(release_name):
 @pytest.mark.parametrize("release_name", ["int-test-helm"], indirect=True)
 def test_helm_chart_deployment(release_name, retries=5, running_time=60):
     # Set the Helm chart name and release name
-    chart_name = "cdf-fabric-replicator-chart"
+    chart_name = "cdf-s3-replicator-chart"
     # Install the Helm chart
     install_helm_chart(release_name, chart_name)
 

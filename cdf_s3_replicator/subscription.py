@@ -5,7 +5,7 @@ from cognite.client.data_classes import DataPointSubscriptionWrite
 from cognite.client.data_classes import filters as flt
 from cognite.client.data_classes.time_series import TimeSeriesProperty
 from cognite.client import CogniteClient
-from cdf_fabric_replicator.config import SubscriptionsConfig
+from cdf_s3_replicator.config import SubscriptionsConfig
 
 
 def autocreate_subscription(

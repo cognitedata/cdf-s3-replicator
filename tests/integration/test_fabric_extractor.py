@@ -5,8 +5,8 @@ import pandas as pd
 from unittest.mock import Mock
 from cognite.extractorutils.base import CancellationToken
 from cognite.extractorutils.metrics import safe_get
-from cdf_fabric_replicator.metrics import Metrics
-from cdf_fabric_replicator.extractor import CdfFabricExtractor
+from cdf_s3_replicator.metrics import Metrics
+from cdf_s3_replicator.extractor import CdfS3Extractor
 from tests.integration.integration_steps.time_series_generation import (
     generate_raw_timeseries_set,
     generate_timeseries,
@@ -21,9 +21,9 @@ from tests.integration.integration_steps.cdf_steps import (
     assert_file_in_cdf,
     remove_file_from_cdf,
 )
-from tests.integration.integration_steps.fabric_steps import (
-    write_timeseries_data_to_fabric,
-    remove_time_series_data_from_fabric,
+from tests.integration.integration_steps.s3_steps import (
+    write_timeseries_data_to_s3,
+    remove_time_series_data_from_s3,
     prepare_test_dataframe_for_comparison,
     upload_file_to_lakehouse,
     remove_file_from_lakehouse,
@@ -37,7 +37,7 @@ CDF_RETRIES = 5
 @pytest.fixture(scope="session")
 def test_extractor(request):
     stop_event = CancellationToken()
-    extractor = CdfFabricExtractor(
+    extractor = CdfS3Extractor(
         metrics=safe_get(Metrics), stop_event=stop_event, name="conftest"
     )
     extractor._initial_load_config(override_path=os.environ["TEST_CONFIG_PATH"])
@@ -56,13 +56,13 @@ def test_extractor(request):
 def raw_time_series(request, azure_credential, cognite_client, test_extractor):
     timeseries_set = generate_raw_timeseries_set(request.param)
     df = pd.DataFrame(timeseries_set, columns=["externalId", "timestamp", "value"])
-    remove_time_series_data_from_fabric(
+    remove_time_series_data_from_s3(
         azure_credential,
         test_extractor.config.source.abfss_prefix
         + "/"
         + test_extractor.config.source.raw_time_series_path,
     )
-    write_timeseries_data_to_fabric(
+    write_timeseries_data_to_s3(
         azure_credential,
         df,
         test_extractor.config.source.abfss_prefix
@@ -83,7 +83,7 @@ def raw_time_series(request, azure_credential, cognite_client, test_extractor):
     for ts in generated_timeseries:
         remove_time_series_data(generated_timeseries, cognite_client)
 
-    remove_time_series_data_from_fabric(
+    remove_time_series_data_from_s3(
         azure_credential,
         test_extractor.config.source.abfss_prefix
         + "/"
@@ -130,7 +130,7 @@ def test_csv_file_path(test_extractor, azure_credential, cognite_client):
     )
 
 
-# Test for Timeseries Extractor service between CDF and Fabric
+# Test for Timeseries Extractor service between CDF and S3
 @pytest.mark.parametrize(
     "raw_time_series",
     [TimeSeriesGeneratorArgs(["int_test_fabcd_hist:mtu:39tic1092.pv"], 100)],
@@ -213,7 +213,7 @@ def test_extractor_timeseries_service_with_state(
 def test_extractor_abfss_file_upload(
     cognite_client, test_csv_file_path, test_extractor, azure_credential
 ):
-    # Upload the file to Fabric
+    # Upload the file to S3
     (
         upload_file_to_lakehouse(
             TEST_FILE_NAME,

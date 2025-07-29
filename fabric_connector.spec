@@ -4,17 +4,17 @@ import os
 import sys
 
 try:
-    from cdf_fabric_replicator import __version__
+    from cdf_s3_replicator import __version__
 
     version = f"{__version__}-"
 except ImportError:
     version = ""
 
 if os.name == "nt":
-    script_path = "cdf_fabric_replicator\\__main__.py"
+    script_path = "cdf_s3_replicator\\__main__.py"
 
 else:
-    script_path = "cdf_fabric_replicator/__main__.py"
+    script_path = "cdf_s3_replicator/__main__.py"
 
 
 hiddenimports = [
@@ -48,7 +48,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name=f"fabric-connector-standalone-{version}{sys.platform}",
+    name=f"s3-connector-standalone-{version}{sys.platform}",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

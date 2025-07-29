@@ -23,11 +23,11 @@ from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import DeltaError
 import pyarrow.parquet as pq
 
-from cdf_fabric_replicator import __version__
-from cdf_fabric_replicator.config import Config, DataModelingConfig
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator import __version__
+from cdf_s3_replicator.config import Config, DataModelingConfig
+from cdf_s3_replicator.metrics import Metrics
 
-from cdf_fabric_replicator.extractor_config import CdfExtractorConfig
+from cdf_s3_replicator.extractor_config import CdfExtractorConfig
 
 
 class DataModelingReplicator(Extractor):
@@ -44,7 +44,7 @@ class DataModelingReplicator(Extractor):
         Sets up the extractor and prepares the local Delta Lake directory.
         """
         super().__init__(
-            name="cdf_fabric_replicator_data_modeling",
+            name="cdf_s3_replicator_data_modeling",
             description="CDF → Delta-Lake (S3)",
             config_class=Config,
             metrics=metrics,

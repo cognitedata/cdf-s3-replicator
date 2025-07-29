@@ -2,7 +2,7 @@ import pytest
 import os
 from unittest.mock import patch, Mock
 
-from cdf_fabric_replicator.data_modeling import DataModelingReplicator
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def mock_env_vars():
 @pytest.fixture
 def test_replicator():
     """Create a test replicator instance"""
-    with patch('cdf_fabric_replicator.data_modeling.DataModelingReplicator.__init__',
+    with patch('cdf_s3_replicator.data_modeling.DataModelingReplicator.__init__',
                lambda x, *args, **kwargs: None):
         replicator = DataModelingReplicator.__new__(DataModelingReplicator)
         replicator.logger = Mock()

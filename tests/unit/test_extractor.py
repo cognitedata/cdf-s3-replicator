@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import pyarrow as pa
 from unittest.mock import patch, Mock
-from cdf_fabric_replicator.extractor import CdfFabricExtractor
+from cdf_s3_replicator.extractor import CdfS3Extractor
 from cognite.client.data_classes import TimeSeriesWrite
 from cognite.client.exceptions import CogniteNotFoundError, CogniteAPIError
 
@@ -13,10 +13,10 @@ FILE_TIME = 1714798800
 @pytest.fixture()
 def test_extractor():
     with patch(
-        "cdf_fabric_replicator.extractor.DefaultAzureCredential"
+        "cdf_s3_replicator.extractor.DefaultAzureCredential"
     ) as mock_credential:
         mock_credential.return_value.get_token.return_value = Mock(token="token")
-        extractor = CdfFabricExtractor(stop_event=Mock(), metrics=Mock())
+        extractor = CdfS3Extractor(stop_event=Mock(), metrics=Mock())
         extractor.config = Mock(
             source=Mock(raw_time_series_path="/table/path", read_batch_size=1000),
             destination=Mock(time_series_prefix="test_prefix"),
@@ -111,12 +111,12 @@ def assert_state_store_calls(test_extractor, df, mock_timeseries_data, set_state
         (None, None, "files/file_path", None, {"upload_files_from_abfss": 1}),
     ],
 )
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.upload_files_from_abfss")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.write_event_data_to_cdf")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.extract_time_series_data")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.run_extraction_pipeline")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.get_current_statestore")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.get_current_config")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.upload_files_from_abfss")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.write_event_data_to_cdf")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.extract_time_series_data")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.run_extraction_pipeline")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.get_current_statestore")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.get_current_config")
 def test_extractor_run(
     mock_get_current_config,
     mock_get_current_statestore,
@@ -165,9 +165,9 @@ def test_extractor_run(
     )
 
 
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.get_current_statestore")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.get_current_statestore")
 @patch(
-    "cdf_fabric_replicator.extractor.CdfFabricExtractor.get_current_config",
+    "cdf_s3_replicator.extractor.CdfS3Extractor.get_current_config",
     return_value=Mock(source=None),
 )
 def test_run_no_config_source(mock_config, mock_get_statestore, test_extractor):
@@ -178,17 +178,17 @@ def test_run_no_config_source(mock_config, mock_get_statestore, test_extractor):
     )
 
 
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.write_time_series_to_cdf")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.write_time_series_to_cdf")
 @patch(
-    "cdf_fabric_replicator.extractor.CdfFabricExtractor.convert_lakehouse_data_to_df_batch",
+    "cdf_s3_replicator.extractor.CdfS3Extractor.convert_lakehouse_data_to_df_batch",
     return_value=iter([pd.DataFrame()]),
 )
 @patch(
-    "cdf_fabric_replicator.extractor.CdfFabricExtractor.get_timeseries_latest_timestamps",
+    "cdf_s3_replicator.extractor.CdfS3Extractor.get_timeseries_latest_timestamps",
     return_value={"id1": None},
 )
 @patch(
-    "cdf_fabric_replicator.extractor.CdfFabricExtractor.retrieve_external_ids_from_lakehouse",
+    "cdf_s3_replicator.extractor.CdfS3Extractor.retrieve_external_ids_from_lakehouse",
     return_value=["id1"],
 )
 def test_extract_time_series_data(
@@ -302,9 +302,9 @@ def test_write_time_series_to_cdf_timeseries_retrieve_error(
 
 
 @pytest.mark.skip("Error in test")
-@patch("cdf_fabric_replicator.extractor.CdfFabricExtractor.run_extraction_pipeline")
+@patch("cdf_s3_replicator.extractor.CdfS3Extractor.run_extraction_pipeline")
 @patch(
-    "cdf_fabric_replicator.extractor.CdfFabricExtractor.convert_lakehouse_data_to_df_batch",
+    "cdf_s3_replicator.extractor.CdfS3Extractor.convert_lakehouse_data_to_df_batch",
     return_value=iter([pd.DataFrame()]),
 )
 @pytest.mark.parametrize(
@@ -326,7 +326,7 @@ def test_write_event_data_to_cdf(
     df = pd.DataFrame(event_data)
     table = pa.Table.from_pandas(df)
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(to_batches=Mock(return_value=iter([table])))
@@ -358,7 +358,7 @@ def test_write_event_data_asset_ids_not_found(test_extractor, event_data, mocker
     df = pd.DataFrame(event_data)
     table = pa.Table.from_pandas(df)
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(to_batches=Mock(return_value=iter([table])))
@@ -381,7 +381,7 @@ def test_write_event_data_asset_retrieve_error(test_extractor, event_data, mocke
     df = pd.DataFrame(event_data)
     table = pa.Table.from_pandas(df)
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(to_batches=Mock(return_value=iter([table])))
@@ -404,7 +404,7 @@ def test_write_event_data_to_cdf_upsert_error(test_extractor, event_data, mocker
     df = pd.DataFrame(event_data)
     table = pa.Table.from_pandas(df)
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(to_batches=Mock(return_value=iter([table])))
@@ -427,7 +427,7 @@ def test_write_event_data_to_cdf_upsert_error(test_extractor, event_data, mocker
 def test_upload_files_from_abfss(mock_service_client, test_extractor, mocker):
     url = "https://container@account.dfs.core.windows.net/Files"
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DataLakeServiceClient",
+        "cdf_s3_replicator.extractor.DataLakeServiceClient",
         return_value=mock_service_client,
     )
     test_extractor.state_store.get_state.return_value = (None,)
@@ -451,7 +451,7 @@ def test_upload_files_from_abfss_cognite_error(
 ):
     url = "https://container@account.dfs.core.windows.net/Files"
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DataLakeServiceClient",
+        "cdf_s3_replicator.extractor.DataLakeServiceClient",
         return_value=mock_service_client,
     )
     test_extractor.state_store.get_state.return_value = (None,)
@@ -472,7 +472,7 @@ def test_retrieve_external_ids_from_lakehouse(test_extractor, mocker):
     df = pd.DataFrame({"externalId": ["id1", "id2", "id1"]})
     table = pa.Table.from_pandas(df)
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(to_pyarrow_table=Mock(return_value=table)),
     )
     # Call the method under test
@@ -484,7 +484,7 @@ def test_retrieve_external_ids_from_lakehouse(test_extractor, mocker):
 def test_retrieve_external_ids_from_lakehouse_exception(test_extractor, mocker):
     # Mock DeltaTable to raise exception from to_pyarrow_table
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(to_pyarrow_table=Mock(side_effect=Exception("Test error"))),
     )
     # Assert Exception was raised by function
@@ -498,7 +498,7 @@ def test_retrieve_external_ids_from_lakehouse_exception(test_extractor, mocker):
 def test_convert_lakehouse_data_to_df_exception(test_extractor, mocker):
     # Mock DeltaTable to raise exception from to_pandas
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(to_batches=Mock(side_effect=Exception("Test error")))
@@ -517,7 +517,7 @@ def test_convert_lakehouse_data_to_df_exception(test_extractor, mocker):
 def test_convert_lakehouse_data_to_df_batch_exception(test_extractor, mocker):
     # Mock DeltaTable to raise exception from to_pandas
     mocker.patch(
-        "cdf_fabric_replicator.extractor.DeltaTable",
+        "cdf_s3_replicator.extractor.DeltaTable",
         return_value=Mock(
             to_pyarrow_dataset=Mock(
                 return_value=Mock(

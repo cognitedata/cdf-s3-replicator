@@ -2,7 +2,7 @@
     "$id": "source_config.schema.json",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "description": "Fabric source configuration. This section configured what data to read from Fabric",
+    "description": "S3 source configuration. This section configured what data to read from S3",
     "unevaluatedProperties": false,
     "properties": {
         "abfss-prefix": {
@@ -27,7 +27,7 @@
         },
         "read-batch-size": {
             "type": "integer",
-            "description": "Input the batch size for reading data from Fabric."
+            "description": "Input the batch size for reading data from S3."
         },
         "file-path": {
             "type": "string",

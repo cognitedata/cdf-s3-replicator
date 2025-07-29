@@ -2,8 +2,8 @@ import pytest
 import logging
 import pandas as pd
 from unittest.mock import patch, call, Mock
-from cdf_fabric_replicator.time_series import TimeSeriesReplicator
-from cdf_fabric_replicator.config import SubscriptionsConfig
+from cdf_s3_replicator.time_series import TimeSeriesReplicator
+from cdf_s3_replicator.config import SubscriptionsConfig
 from cognite.client.data_classes.datapoints_subscriptions import (
     DatapointsUpdate,
     Datapoints,
@@ -15,14 +15,14 @@ from cognite.client.data_classes import (
 )
 from cognite.client.data_classes.time_series import TimeSeriesProperty
 from cognite.client.exceptions import CogniteAPIError
-from cdf_fabric_replicator import subscription
+from cdf_s3_replicator import subscription
 from deltalake.exceptions import DeltaError, TableNotFoundError
 
 
 @pytest.fixture(scope="function")
 def test_timeseries_replicator():
     with patch(
-        "cdf_fabric_replicator.time_series.DefaultAzureCredential"
+        "cdf_s3_replicator.time_series.DefaultAzureCredential"
     ) as mock_credential:
         mock_credential.return_value.get_token.return_value = Mock(token="test_token")
         replicator = TimeSeriesReplicator(metrics=Mock(), stop_event=Mock())
@@ -113,7 +113,7 @@ def input_data_null():
 
 class TestTimeSeriesReplicator:
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
     )
     def test_run_no_subscriptions(
         self, mock_process_subscriptions, test_timeseries_replicator
@@ -123,11 +123,11 @@ class TestTimeSeriesReplicator:
         mock_process_subscriptions.assert_not_called()
 
     @patch(
-        "cdf_fabric_replicator.time_series.sub.autocreate_subscription",
+        "cdf_s3_replicator.time_series.sub.autocreate_subscription",
         return_value=None,
     )
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
     )
     def test_run(
         self,
@@ -171,7 +171,7 @@ class TestTimeSeriesReplicator:
         test_timeseries_replicator.cognite_client.extraction_pipelines.runs.create.assert_called_once()
 
     @patch(
-        "cdf_fabric_replicator.time_series.sub.autocreate_subscription",
+        "cdf_s3_replicator.time_series.sub.autocreate_subscription",
         return_value=None,
     )
     def test_run_autocreate_error(
@@ -195,10 +195,10 @@ class TestTimeSeriesReplicator:
         test_timeseries_replicator.logger.error.assert_called_once()
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.process_subscriptions"
     )
     @patch(
-        "cdf_fabric_replicator.time_series.sub.autocreate_subscription",
+        "cdf_s3_replicator.time_series.sub.autocreate_subscription",
         return_value=None,
     )
     def test_run_extraction_pipeline_error(
@@ -231,8 +231,8 @@ class TestTimeSeriesReplicator:
         # Assert logger is called
         test_timeseries_replicator.logger.error.assert_called_once()
 
-    @patch("cdf_fabric_replicator.time_series.ThreadPoolExecutor", autospec=True)
-    @patch("cdf_fabric_replicator.time_series.TimeSeriesReplicator.process_partition")
+    @patch("cdf_s3_replicator.time_series.ThreadPoolExecutor", autospec=True)
+    @patch("cdf_s3_replicator.time_series.TimeSeriesReplicator.process_partition")
     def test_process_subscriptions(
         self,
         mock_process_partition,
@@ -258,7 +258,7 @@ class TestTimeSeriesReplicator:
         ]  # Call enter submit for each partition
         mock_executor.assert_has_calls(expected_calls, any_order=True)
 
-    @patch("cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
+    @patch("cdf_s3_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
     def test_process_partition_when_updates(
         self, mock_send_to_lakehouse, mock_subscription, test_timeseries_replicator
     ):
@@ -285,7 +285,7 @@ class TestTimeSeriesReplicator:
         # Check that the return value is correct
         assert result == "No new data"
 
-    @patch("cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
+    @patch("cdf_s3_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
     def test_process_partition_when_no_updates(
         self, mock_send_to_lakehouse, mock_subscription, test_timeseries_replicator
     ):
@@ -312,7 +312,7 @@ class TestTimeSeriesReplicator:
         # Check that the return value is correct
         assert result == "test1_0 no more data at test_cursor"
 
-    @patch("cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
+    @patch("cdf_s3_replicator.time_series.TimeSeriesReplicator.send_to_lakehouse")
     def test_process_partition_cognite_error(
         self, mock_send_to_lakehouse, test_timeseries_replicator
     ):
@@ -331,7 +331,7 @@ class TestTimeSeriesReplicator:
         test_timeseries_replicator.logger.error.assert_called_once()
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_data_point_to_lakehouse_table"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.send_data_point_to_lakehouse_table"
     )
     def test_send_to_lakehouse_send_now(
         self, mock_send_dp_to_lakehouse, test_timeseries_replicator
@@ -365,7 +365,7 @@ class TestTimeSeriesReplicator:
         assert test_timeseries_replicator.update_queue == []
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_data_point_to_lakehouse_table"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.send_data_point_to_lakehouse_table"
     )
     def test_send_to_lakehouse_send_now_false(
         self, mock_send_dp_to_lakehouse, test_timeseries_replicator
@@ -395,10 +395,10 @@ class TestTimeSeriesReplicator:
         assert test_timeseries_replicator.update_queue == [1, 2, 3]
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
     )
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.send_time_series_to_lakehouse_table"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.send_time_series_to_lakehouse_table"
     )
     def test_send_data_point_to_lakehouse_table(
         self,
@@ -432,7 +432,7 @@ class TestTimeSeriesReplicator:
         pd.testing.assert_frame_equal(args[1], datapoints_dataframe)
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
     )
     def test_send_time_series_to_lakehouse_table(
         self,
@@ -481,7 +481,7 @@ class TestTimeSeriesReplicator:
         pd.testing.assert_frame_equal(args[1], timeseries_dataframe, check_dtype=False)
 
     @patch(
-        "cdf_fabric_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
+        "cdf_s3_replicator.time_series.TimeSeriesReplicator.write_pd_to_deltalake"
     )
     def test_send_time_series_to_lakehouse_table_error_not_timeseries(
         self,
@@ -546,8 +546,8 @@ class TestTimeSeriesReplicator:
         # Assert that the result is None
         assert df is None
 
-    @patch("cdf_fabric_replicator.time_series.write_deltalake")
-    @patch("cdf_fabric_replicator.time_series.DeltaTable")
+    @patch("cdf_s3_replicator.time_series.write_deltalake")
+    @patch("cdf_s3_replicator.time_series.DeltaTable")
     def test_write_pd_to_deltalake_new_table(
         self, mock_deltatable, mock_write_deltalake, test_timeseries_replicator
     ):
@@ -572,11 +572,11 @@ class TestTimeSeriesReplicator:
             schema_mode="merge",
             storage_options={
                 "bearer_token": "test_token",
-                "use_fabric_endpoint": "true",
+                "use_s3_endpoint": "true",
             },
         )
 
-    @patch("cdf_fabric_replicator.time_series.DeltaTable")
+    @patch("cdf_s3_replicator.time_series.DeltaTable")
     def test_write_pd_to_deltalake_error(
         self, mock_deltatable, test_timeseries_replicator
     ):
@@ -619,7 +619,7 @@ class TestTimeSeriesReplicator:
                 )
             )
 
-    @patch("cdf_fabric_replicator.time_series.DeltaTable")
+    @patch("cdf_s3_replicator.time_series.DeltaTable")
     def test_write_pd_to_deltalake_merge_table(
         self, mock_delta_table_class, test_timeseries_replicator
     ):
@@ -640,7 +640,7 @@ class TestTimeSeriesReplicator:
             "test_table",
             storage_options={
                 "bearer_token": test_timeseries_replicator.get_token(),
-                "use_fabric_endpoint": "true",
+                "use_s3_endpoint": "true",
             },
         )
 

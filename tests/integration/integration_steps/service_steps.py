@@ -1,5 +1,5 @@
-from cdf_fabric_replicator.time_series import TimeSeriesReplicator
-from cdf_fabric_replicator.extractor import CdfFabricExtractor
+from cdf_s3_replicator.time_series import TimeSeriesReplicator
+from cdf_s3_replicator.extractor import CdfS3Extractor
 from pandas import DataFrame
 
 
@@ -8,7 +8,7 @@ def run_replicator(test_replicator: TimeSeriesReplicator):
     test_replicator.process_subscriptions()
 
 
-def run_extractor(test_extractor: CdfFabricExtractor, data_frame: DataFrame):
+def run_extractor(test_extractor: CdfS3Extractor, data_frame: DataFrame):
     # Processes data point subscription batches
     test_extractor.write_time_series_to_cdf(data_frame)
 

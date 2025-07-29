@@ -1,20 +1,20 @@
 # The list of artifacts to be deployed with each release.
 # {version} is substituted with the version being released in path and name.
 artifacts:
-  - name: fabric-connector-standalone-{version}.zip
-    path: fabric-connector-standalone-{version}-win32.zip
+  - name: s3-connector-standalone-{version}.zip
+    path: s3-connector-standalone-{version}-win32.zip
     platform: windows
     displayName: "Windows executable"
-  - name: fabric-connector-winservice-{version}.zip
-    path: fabric-connector-winservice-{version}-win32.zip
+  - name: s3-connector-winservice-{version}.zip
+    path: s3-connector-winservice-{version}-win32.zip
     platform: windows
     displayName: "Windows service"
-  - name: fabric-connector-{version}.msi
-    path: fabric-connector-{version}.msi
+  - name: s3-connector-{version}.msi
+    path: s3-connector-{version}.msi
     platform: windows
     displayName: "Windows installer"
-  - name: fabric-connector-linux-{version}.zip
-    path: fabric-connector-standalone-{version}-linux.zip
+  - name: s3-connector-linux-{version}.zip
+    path: s3-connector-standalone-{version}-linux.zip
     platform: linux
     displayName: "Linux executable"
 
@@ -40,32 +40,32 @@ versions:
     description: "Fix RAW mirroring service"
     changelog:
       added:
-        - "Update change detection on RAW tables in Fabric"
+        - "Update change detection on RAW tables in S3"
   "0.2.0":
-    description: "First release candidate of Microsoft Fabric connector"
+    description: "First release candidate of Microsoft S3 connector"
     changelog:
       added:
         - "First release"
 
 # Extractor definition
 extractor:
-  externalId: fabric-connector
-  name: Cognite Fabric Connector
-  description: Connect to Microsoft Fabric and exchange data with Cognite Data Fusion.
+  externalId: s3-connector
+  name: Cognite S3 Connector
+  description: Connect to Microsoft S3 and exchange data with Cognite Data Fusion.
   documentation: |
-    The Cognite Fabric Connector is a generic connector that can connect to Microsoft Fabric and exchange data with Cognite Data Fusion.
+    The Cognite S3 Connector is a generic connector that can connect to Microsoft S3 and exchange data with Cognite Data Fusion.
 
     The replicator consists of four services:
-      * Time series replicator - Copies time series data from CDF to Fabric.
-      * Data model replicator - Copies data model nodes and edges from CDF to Fabric.
-      * Event replicator - Copies event data from CDF to Fabric.
-      * RAW replicator - Copies RAW tables from CDF to Fabric
-      * Fabric data extractor - Copies time series, events, and files from Fabric to CDF.
+      * Time series replicator - Copies time series data from CDF to S3.
+      * Data model replicator - Copies data model nodes and edges from CDF to S3.
+      * Event replicator - Copies event data from CDF to S3.
+      * RAW replicator - Copies RAW tables from CDF to S3
+      * S3 data extractor - Copies time series, events, and files from S3 to CDF.
 
   type: global # Filterable type
   tags:
-    - fabric
-  image: assets/fabric.svg
+    - s3
+  image: assets/s3.svg
 
 schema:
   rootSchema: schema/config.schema.json

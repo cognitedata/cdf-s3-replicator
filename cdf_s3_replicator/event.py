@@ -7,9 +7,9 @@ from azure.identity import DefaultAzureCredential
 from deltalake import write_deltalake, DeltaTable
 from deltalake.exceptions import DeltaError, TableNotFoundError
 import pyarrow as pa
-from cdf_fabric_replicator import __version__
-from cdf_fabric_replicator.config import Config
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator import __version__
+from cdf_s3_replicator.config import Config
+from cdf_s3_replicator.metrics import Metrics
 from cognite.client.data_classes import EventList, Event
 from datetime import datetime
 
@@ -22,8 +22,8 @@ class EventsReplicator(Extractor):
         override_config_path: Optional[str] = None,
     ) -> None:
         super().__init__(
-            name="cdf_fabric_replicator_events",
-            description="CDF Fabric Replicator",
+            name="cdf_s3_replicator_events",
+            description="CDF S3 Replicator",
             config_class=Config,
             metrics=metrics,
             use_default_state_store=False,
@@ -153,7 +153,7 @@ class EventsReplicator(Extractor):
         data = pa.Table.from_pylist(events)
         storage_options = {
             "bearer_token": token.token,
-            "use_fabric_endpoint": "true",
+            "use_s3_endpoint": "true",
         }
 
         try:

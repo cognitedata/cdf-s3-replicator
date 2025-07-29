@@ -13,7 +13,7 @@ from cognite.client.data_classes import (
 from cognite.client.exceptions import CogniteNotFoundError
 from cognite.client.data_classes.data_modeling import Space, NodeApply, EdgeApply
 from cognite.client.data_classes.data_modeling.ids import DataModelId
-from cdf_fabric_replicator.config import SubscriptionsConfig
+from cdf_s3_replicator.config import SubscriptionsConfig
 
 TIMESTAMP_COLUMN = "timestamp"
 

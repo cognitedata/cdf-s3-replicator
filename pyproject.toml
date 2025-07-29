@@ -1,7 +1,7 @@
 [project]
-name = "cdf-fabric-replicator"
+name = "cdf-s3-replicator"
 version = "0.3.3"
-description = "Stream data from CDF to Fabric/Onelake"
+description = "Stream data from CDF to S3/Onelake"
 authors = [
     { name = "Murad Saeter", email = "murad.sater@cognite.com" }
 ]
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cdf-fabric-replicator = "cdf_fabric_replicator.__main__:main"
+cdf-s3-replicator = "cdf_s3_replicator.__main__:main"
 
 [project.optional-dependencies]
 dev = [

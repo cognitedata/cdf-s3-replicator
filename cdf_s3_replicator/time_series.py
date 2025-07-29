@@ -20,9 +20,9 @@ from cognite.extractorutils.base import Extractor
 from cognite.extractorutils.base import CancellationToken
 
 
-from cdf_fabric_replicator import __version__, subscription as sub
-from cdf_fabric_replicator.config import Config, SubscriptionsConfig
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator import __version__, subscription as sub
+from cdf_s3_replicator.config import Config, SubscriptionsConfig
+from cdf_s3_replicator.metrics import Metrics
 
 
 class TimeSeriesReplicator(Extractor):
@@ -33,8 +33,8 @@ class TimeSeriesReplicator(Extractor):
         override_config_path: Optional[str] = None,
     ) -> None:
         super().__init__(
-            name="cdf_fabric_replicator_ts",
-            description="CDF Fabric Replicator",
+            name="cdf_s3_replicator_ts",
+            description="CDF S3 Replicator",
             config_class=Config,
             metrics=metrics,
             use_default_state_store=False,
@@ -210,7 +210,7 @@ class TimeSeriesReplicator(Extractor):
                 metadata = (
                     ts.metadata
                     if len(ts.metadata.keys()) > 0
-                    else {"source": "cdf_fabric_replicator"}
+                    else {"source": "cdf_s3_replicator"}
                 )
                 df = pd.DataFrame(
                     np.array(
@@ -314,7 +314,7 @@ class TimeSeriesReplicator(Extractor):
     ) -> None:
         storage_options = {
             "bearer_token": self.get_token(),
-            "use_fabric_endpoint": "true",
+            "use_s3_endpoint": "true",
         }
 
         try:

@@ -2,16 +2,16 @@
     "$id": "raw_tables_config.schema.json",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "description": "CDF RAW configuration for to be synced to Fabric",
+    "description": "CDF RAW configuration for to be synced to S3",
     "unevaluatedProperties": false,
     "properties": {
         "table-name": {
             "type": "string",
-            "description": "Enter the name of the RAW table in CDF to sync to Fabric."
+            "description": "Enter the name of the RAW table in CDF to sync to S3."
         },
         "db-name": {
             "type": "string",
-            "description": "Enter the database name in CDF to sync to Fabric."
+            "description": "Enter the database name in CDF to sync to S3."
         },
         "lakehouse-abfss-path-raw": {
             "type": "string",

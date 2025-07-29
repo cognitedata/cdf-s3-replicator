@@ -19,9 +19,9 @@
             "description": "Input the batch size for time series ingestion.",
             "default": 100000
         },
-        "fabric-ingest-batch-size": {
+        "s3-ingest-batch-size": {
             "type": "integer",
-            "description": "Input the batch size for ingestion into Fabric.",
+            "description": "Input the batch size for ingestion into S3.",
             "default": 1000
         },
         "poll-time": {

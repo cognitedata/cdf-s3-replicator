@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, Mock
-from cdf_fabric_replicator.raw import RawTableReplicator
+from cdf_s3_replicator.raw import RawTableReplicator
 from cognite.client.data_classes import Row
 from deltalake.exceptions import DeltaError, TableNotFoundError
 import pyarrow as pa
@@ -8,7 +8,7 @@ import pyarrow as pa
 
 @pytest.fixture()
 def test_raw_replicator():
-    with patch("cdf_fabric_replicator.raw.DefaultAzureCredential") as mock_credential:
+    with patch("cdf_s3_replicator.raw.DefaultAzureCredential") as mock_credential:
         mock_credential.return_value.get_token.return_value = Mock(token="token")
         raw_replicator = RawTableReplicator(metrics=Mock(), stop_event=Mock())
         raw_replicator.config = Mock(
@@ -65,7 +65,7 @@ def rowListPyArrow():
     return pa.Table.from_pylist(rows_dict)
 
 
-@patch("cdf_fabric_replicator.raw.RawTableReplicator.process_raw_tables")
+@patch("cdf_s3_replicator.raw.RawTableReplicator.process_raw_tables")
 def test_run(mock_process_raw_tables, test_raw_replicator):
     test_raw_replicator.stop_event = Mock(is_set=Mock(side_effect=[False, True]))
     test_raw_replicator.run()
@@ -82,8 +82,8 @@ def test_run_no_event_config(test_raw_replicator):
 
 
 @pytest.mark.parametrize("last_updated_time", [1710505316426])
-@patch("cdf_fabric_replicator.raw.write_deltalake")
-@patch("cdf_fabric_replicator.raw.DeltaTable")
+@patch("cdf_s3_replicator.raw.write_deltalake")
+@patch("cdf_s3_replicator.raw.DeltaTable")
 def test_process_raw_tables(
     mock_deltatable,
     mock_write_deltalake,
@@ -114,7 +114,7 @@ def test_process_raw_tables(
         db_name="raw_db",
         table_name="raw_table",
         min_last_updated_time=last_updated_time,
-        limit=test_raw_replicator.config.extractor.fabric_ingest_batch_size,
+        limit=test_raw_replicator.config.extractor.s3_ingest_batch_size,
     )
 
     mock_write_deltalake.assert_called_with(
@@ -125,13 +125,13 @@ def test_process_raw_tables(
         schema_mode="merge",
         storage_options={
             "bearer_token": "token",
-            "use_fabric_endpoint": "true",
+            "use_s3_endpoint": "true",
         },
     )
 
 
-@patch("cdf_fabric_replicator.raw.write_deltalake")
-@patch("cdf_fabric_replicator.raw.DeltaTable")
+@patch("cdf_s3_replicator.raw.write_deltalake")
+@patch("cdf_s3_replicator.raw.DeltaTable")
 def test_process_events_delta_error(
     mock_deltatable, mock_write_deltalake, rowList, test_raw_replicator
 ):

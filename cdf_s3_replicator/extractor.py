@@ -25,22 +25,22 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from datetime import datetime
 
-from cdf_fabric_replicator import __version__
-from cdf_fabric_replicator.config import Config
-from cdf_fabric_replicator.metrics import Metrics
+from cdf_s3_replicator import __version__
+from cdf_s3_replicator.config import Config
+from cdf_s3_replicator.metrics import Metrics
 
 
-class CdfFabricExtractor(Extractor[Config]):
+class CdfS3Extractor(Extractor[Config]):
     def __init__(
         self,
         metrics: Metrics,
         stop_event: CancellationToken,
-        name: str = "cdf_fabric_extractor",
+        name: str = "cdf_s3_extractor",
         override_config_path: Optional[str] = None,
     ) -> None:
         super().__init__(
             name=name,
-            description="CDF Fabric Extractor",
+            description="CDF S3 Extractor",
             config_class=Config,
             metrics=metrics,
             version=__version__,
@@ -53,7 +53,7 @@ class CdfFabricExtractor(Extractor[Config]):
 
     def run(self) -> None:
         self.config = self.get_current_config()
-        self.client = self.config.cognite.get_cognite_client("cdf-fabric-extractor")
+        self.client = self.config.cognite.get_cognite_client("cdf-s3-extractor")
         self.state_store = self.get_current_statestore()
         self.state_store.initialize()
 
@@ -148,7 +148,7 @@ class CdfFabricExtractor(Extractor[Config]):
     def get_service_client_token_credential(
         self, account_name: str
     ) -> DataLakeServiceClient:
-        account_url = f"https://{account_name}.dfs.fabric.microsoft.com"
+        account_url = f"https://{account_name}.dfs.s3.microsoft.com"
         token_credential = DefaultAzureCredential()
         service_client = DataLakeServiceClient(account_url, credential=token_credential)
 
