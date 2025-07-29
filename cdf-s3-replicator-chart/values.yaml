@@ -62,13 +62,3 @@ env:
     stateDb: ""
     stateTable: ""
     extractionPipeline: ""
-  lakehouse:
-    timeseriesTable: ""
-    abfssPrefix: ""
-  extractor:
-    eventPath: ""
-    filePath: ""
-    rawTsPath: ""
-    datasetId: ""
-    tsPrefix: ""
-    eventTableName: ""

@@ -5,11 +5,7 @@ from cognite.extractorutils.base import CancellationToken
 
 from cognite.extractorutils.metrics import safe_get
 
-from cdf_s3_replicator.time_series import TimeSeriesReplicator
 from cdf_s3_replicator.data_modeling import DataModelingReplicator
-from cdf_s3_replicator.extractor import CdfS3Extractor
-from cdf_s3_replicator.event import EventsReplicator
-from cdf_s3_replicator.raw import RawTableReplicator
 
 from cdf_s3_replicator.metrics import Metrics
 from cdf_s3_replicator.log_config import LOGGING_CONFIG

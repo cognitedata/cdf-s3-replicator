@@ -17,10 +17,7 @@ from cognite.extractorutils.threading import CancellationToken
 
 from cognite.extractorutils.metrics import safe_get
 
-from cdf_s3_replicator.time_series import TimeSeriesReplicator
 from cdf_s3_replicator.data_modeling import DataModelingReplicator
-from cdf_s3_replicator.extractor import CdfS3Extractor
-from cdf_s3_replicator.event import EventsReplicator
 
 from cdf_s3_replicator.metrics import Metrics
 
@@ -64,27 +61,6 @@ class WindowsService(win32serviceutil.ServiceFramework):
                 os.path.dirname(sys.executable), "config.yaml"
             )
             worker_list = []
-
-            with EventsReplicator(
-                metrics=safe_get(Metrics),
-                stop_event=self.cancellation_token.create_child_token(),
-                override_config_path=config_file_path,
-            ) as event_replicator:
-                worker_list.append(threading.Thread(target=event_replicator.run))
-
-            with TimeSeriesReplicator(
-                metrics=safe_get(Metrics),
-                stop_event=self.cancellation_token.create_child_token(),
-                override_config_path=config_file_path,
-            ) as ts_replicator:
-                worker_list.append(threading.Thread(target=ts_replicator.run))
-
-            with CdfS3Extractor(
-                metrics=safe_get(Metrics),
-                stop_event=self.cancellation_token.create_child_token(),
-                override_config_path=config_file_path,
-            ) as extractor:
-                worker_list.append(threading.Thread(target=extractor.run))
 
             with DataModelingReplicator(
                 metrics=safe_get(Metrics),

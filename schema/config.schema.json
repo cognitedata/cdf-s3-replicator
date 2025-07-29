@@ -14,37 +14,15 @@
             "description": "Contains the common extractor configuration.",
             "$ref": "extractor_config.schema.json"
         },
-        "source": {
-            "description": "nsert the source configuration for data mirrored from S3.",
-            "$ref": "source_config.schema.json"
-        },
         "destination": {
             "description": "Insert the destination configuration for DM data mirrored from CDF.",
             "$ref": "destination_config.schema.json"
-        },
-        "subscriptions": {
-            "description": "Insert the time series subscriptions configuration for time series mirrored to S3.",
-            "type": "array",
-            "items": {
-                "$ref": "subscriptions_config.schema.json"
-            }
         },
         "data-modeling": {
             "description": "Insert the data modeling configuration for syncing a data model to S3.",
             "type": "array",
             "items": {
                 "$ref": "data_modeling_config.schema.json"
-            }
-        },
-        "event": {
-            "description": "Enter the event configuration for mirroring events to S3.",
-            "$ref": "event_config.schema.json"
-        },
-        "raw-tables": {
-            "description": "Enter the raw tables configuration to mirror the raw tables to S3.",
-            "type": "array",
-            "items": {
-                "$ref": "raw_tables_config.schema.json"
             }
         }
     }

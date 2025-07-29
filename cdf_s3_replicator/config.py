@@ -23,14 +23,6 @@ class ExtractorPipelineConfig:
 
 
 @dataclass
-class SubscriptionsConfig:
-    external_id: str
-    partitions: List[int]
-    lakehouse_abfss_path_dps: str
-    lakehouse_abfss_path_ts: str
-
-
-@dataclass
 class DMModel:
     external_id: str
     views: list[str] | None = None
@@ -45,39 +37,6 @@ class DataModelingConfig:
 
 
 @dataclass
-class EventConfig:
-    lakehouse_abfss_path_events: str
-    batch_size: int = 1000
-
-
-@dataclass
-class RawConfig:
-    table_name: str
-    db_name: str
-    raw_path: str
-    incremental_field: str
-
-
-@dataclass
-class RawConfigSource:
-    table_name: str
-    db_name: str
-    lakehouse_abfss_path_raw: str
-
-
-@dataclass
-class SourceConfig:
-    abfss_prefix: str
-    data_set_id: str
-    event_path: Optional[str] = None
-    event_path_incremental_field: Optional[str] = None
-    raw_time_series_path: Optional[str] = None
-    read_batch_size: int = 1000
-    file_path: Optional[str] = None
-    raw_tables: Optional[List[RawConfig]] = None
-
-
-@dataclass
 class S3DestinationConfig:
     bucket: str
     prefix: Optional[str] = None
@@ -86,7 +45,6 @@ class S3DestinationConfig:
 
 @dataclass
 class DestinationConfig:
-    time_series_prefix: Optional[str] = None
     s3: Optional[S3DestinationConfig] = None
 
 
@@ -94,9 +52,5 @@ class DestinationConfig:
 class Config(BaseConfig):
     logger: LoggingConfig
     extractor: ExtractorConfig
-    source: Optional[SourceConfig]
     destination: Optional[DestinationConfig]
-    subscriptions: Optional[List[SubscriptionsConfig]]
     data_modeling: Optional[List[DataModelingConfig]]
-    event: Optional[EventConfig]
-    raw_tables: Optional[List[RawConfigSource]]
