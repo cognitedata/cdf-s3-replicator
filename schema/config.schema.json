@@ -19,7 +19,7 @@
             "$ref": "source_config.schema.json"
         },
         "destination": {
-            "description": "Insert the destination configuration for time series data mirrored from S3.",
+            "description": "Insert the destination configuration for DM data mirrored from CDF.",
             "$ref": "destination_config.schema.json"
         },
         "subscriptions": {

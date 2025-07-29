@@ -119,6 +119,31 @@ spec:
                 configMapKeyRef:
                   name: cdf-conn-config
                   key: COGNITE_EXTRACTION_PIPELINE
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_S3_BUCKET
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_REGION
+            - name: S3_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: S3_PREFIX
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

@@ -20,4 +20,9 @@ data:
   LAKEHOUSE_TIMESERIES_TABLE: {{ .Values.env.lakehouse.timeseriesTable | quote }}
   COGNITE_STATE_DB: {{ .Values.env.cognite.stateDb | quote }}
   COGNITE_EXTRACTION_PIPELINE: {{ .Values.env.cognite.extractionPipeline | quote }}
+  AWS_ACCESS_KEY_ID: {{ .Values.env.cognite.accessKeyId | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ .Values.env.cognite.secretAccessKey | quote }}
+  AWS_S3_BUCKET: {{ .Values.env.cognite.s3Bucket | quote }}
+  AWS_REGION: {{ .Values.env.cognite.region | quote }}
+  S3_PREFIX: {{ .Values.env.cognite.s3Prefix | quote }}
 
