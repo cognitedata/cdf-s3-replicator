@@ -7,6 +7,8 @@ from pathlib import Path
 import uuid
 from typing import Any, Dict, Optional, Union
 import pyarrow as pa
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 from cognite.client.data_classes.data_modeling.ids import ViewId, ContainerId
 from cognite.client.data_classes.data_modeling.query import (
     EdgeResultSetExpression,
@@ -397,6 +399,19 @@ class DataModelingReplicator(Extractor):
             for i in result.data.get(rs, [])
         )
 
+    @retry(
+        retry=(lambda exc: isinstance(exc, (
+                CogniteAPIError,
+                requests.exceptions.RequestException,
+                Exception
+        ))),
+        wait=wait_exponential_jitter(initial=1, max=30),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    def _safe_sync(self, client, query):
+        return client.data_modeling.instances.sync(query=query, include_typing=False)
+
 
     def _iterate_and_write(self, dm_cfg: DataModelingConfig, state_id: str, query: Query) -> None:
         """
@@ -412,27 +427,18 @@ class DataModelingReplicator(Extractor):
         original_cursors = query.cursors
 
         try:
-            res = self.cognite_client.data_modeling.instances.sync(
-                query=query,
-                include_typing=False
-            )
+            res = self._safe_sync(self.cognite_client, query)
         except CogniteAPIError as e:
             self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with original cursors...")
             query.cursors = original_cursors
             try:
-                res = self.cognite_client.data_modeling.instances.sync(
-                    query=query,
-                    include_typing=False
-                )
+                res = self._safe_sync(self.cognite_client, query)
             except CogniteAPIError as e:
                 self.logger.error(f"Retry sync also failed for {state_id}: {e}")
                 if original_cursors is not None:
                     self.logger.warning(f"Resetting cursors for {state_id} as last resort")
                     query.cursors = None
-                    res = self.cognite_client.data_modeling.instances.sync(
-                        query=query,
-                        include_typing=False
-                    )
+                    res = self._safe_sync(self.cognite_client, query)
                 else:
                     raise e
 
@@ -455,10 +461,7 @@ class DataModelingReplicator(Extractor):
 
             query.cursors = res.cursors
             try:
-                res = self.cognite_client.data_modeling.instances.sync(
-                    query=query,
-                    include_typing=False
-                )
+                res = self._safe_sync(self.cognite_client, query)
                 page_count += 1
             except CogniteAPIError as e:
                 self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Keeping current cursors...")
