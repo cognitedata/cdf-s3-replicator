@@ -1,9 +1,10 @@
 [project]
 name = "cdf-s3-replicator"
 version = "0.3.3"
-description = "Stream data from CDF to S3/Onelake"
+description = "Stream data from CDF to S3"
 authors = [
-    { name = "Murad Saeter", email = "murad.sater@cognite.com" }
+    { name = "Murad Saeter", email = "murad.sater@cognite.com" },
+    { name = "Marwan Elsharkawi", email = "marwan.elsharkawi@cognite.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -17,6 +18,8 @@ dependencies = [
     "pywin32>=308; sys_platform == 'win32'",
     "boto3>=1.38.28",
     "pyarrow>=20.0.0",
+    "prometheus-client>=0.21.1,<1.0.0",
+    "tenacity>=9.0.0,<9.1.2",
 ]
 
 [project.scripts]
