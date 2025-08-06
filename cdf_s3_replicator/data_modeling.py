@@ -28,6 +28,9 @@ from cdf_s3_replicator.config import Config, DataModelingConfig
 from cdf_s3_replicator.metrics import Metrics
 
 from cdf_s3_replicator.extractor_config import CdfExtractorConfig
+from datetime import datetime, timedelta, UTC
+from itertools import chain
+import botocore.config as bc
 
 
 class DataModelingReplicator(Extractor):
@@ -63,24 +66,43 @@ class DataModelingReplicator(Extractor):
         self.base_dir: Path = Path.cwd() / "deltalake"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
-        self._s3 = None
+        self._s3: boto3.client | None = None
+        self._s3_created_at: datetime | None = None
         self.LARGE_TABLE_THRESHOLD = 1_000_000  # Threshold for large views to optimize memory usage
 
 
-    def _ensure_s3(self):
-        """Adds S3 client if not already initialized."""
-        if self._s3 is None:
-            required_vars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION']
-            missing = [var for var in required_vars if not os.getenv(var)]
-            if missing:
-                raise RuntimeError(f"Missing required environment variables: {missing}")
+    def _make_s3_client(self) -> boto3.client:
+        """Create a new S3 client using the default credential chain."""
+        _RETRY_CFG = bc.Config(
+            retries={"max_attempts": 10, "mode": "adaptive"},
+            connect_timeout=5,
+            read_timeout=30,
+        )
+        return boto3.client("s3", config=_RETRY_CFG)
 
-            self._s3 = boto3.client(
-                "s3",
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                region_name=os.getenv("AWS_REGION"),
-            )
+
+    def _ensure_s3(self):
+        """Create or renew the boto3 client every ~50 min to dodge STS expiry."""
+        if self._s3 is None:
+            self._s3 = self._make_s3_client()
+            self._s3_created_at = datetime.now(UTC)
+        elif datetime.now(UTC) - self._s3_created_at > timedelta(minutes=50):
+            self._s3 = self._make_s3_client()
+            self._s3_created_at = datetime.now(UTC)
+
+
+    def _list_prefixes(
+            self, bucket: str, prefix: str, delimiter: str = "/"
+    ) -> list[str]:
+        """Return *all* CommonPrefixes under `prefix` (depth-1 folders)."""
+        self._ensure_s3()
+        paginator = self._s3.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter=delimiter)
+        return [
+            cp["Prefix"]
+            for cp in chain.from_iterable(p.get("CommonPrefixes", []) for p in pages)
+        ]
+
 
     def run(self) -> None:
         """
@@ -655,13 +677,10 @@ class DataModelingReplicator(Extractor):
         self._ensure_s3()
         prefix = f"{self._raw_prefix(dm_space)}/views/"
         bucket, key_prefix = prefix[5:].split("/", 1)
-        resp = self._s3.list_objects_v2(
-            Bucket=bucket, Prefix=key_prefix, Delimiter="/"
-        )
         folders = [
-            cp["Prefix"][len(key_prefix):-1]
-            for cp in resp.get("CommonPrefixes", [])
-            if cp["Prefix"].endswith("/edges/")
+            cp[len(key_prefix):-1]
+            for cp in self._list_prefixes(bucket, key_prefix)
+            if cp.endswith("/edges/")
         ]
         edge_view_folders = [
             f"{prefix}{f}"
@@ -750,6 +769,29 @@ class DataModelingReplicator(Extractor):
             self._cleanup_temp_files(pub_dir, temp_suffix)
             raise
 
+    def _copy_and_verify(
+            self,
+            src_bucket: str,
+            src_key: str,
+            dst_bucket: str,
+            dst_key: str,
+            max_wait: int = 10,
+    ) -> None:
+        """Copy S3 object and block until the new ETag is visible."""
+        self._ensure_s3()
+        resp = self._s3.copy_object(
+            CopySource={"Bucket": src_bucket, "Key": src_key},
+            Bucket=dst_bucket,
+            Key=dst_key,
+        )
+        etag = resp["CopyObjectResult"]["ETag"].strip('"')
+        for _ in range(max_wait):
+            head = self._s3.head_object(Bucket=dst_bucket, Key=dst_key)
+            if head["ETag"].strip('"') == etag:
+                return
+            time.sleep(1)
+        raise RuntimeError(f"S3 eventual consistency timeout for {dst_key}")
+
 
     def _atomic_replace_files(self, file_updates: list[tuple[str, str, str]]) -> None:
         """
@@ -762,12 +804,7 @@ class DataModelingReplicator(Extractor):
             for temp_path, final_path, desc in file_updates:
                 temp_bucket, temp_key = temp_path[5:].split("/", 1)
                 final_bucket, final_key = final_path[5:].split("/", 1)
-
-                self._s3.copy_object(
-                    CopySource={'Bucket': temp_bucket, 'Key': temp_key},
-                    Bucket=final_bucket,
-                    Key=final_key
-                )
+                self._copy_and_verify(temp_bucket, temp_key, final_bucket, final_key)
         except Exception as e:
             self.logger.error("Failed during atomic file replacement: %s", e)
             raise
@@ -938,21 +975,32 @@ class DataModelingReplicator(Extractor):
             raise RuntimeError(f"No data model version set for model {model} in space {space}")
 
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
-        s3_uri = (
-            f"s3://{self.s3_cfg.bucket}/"
-            f"{prefix}raw/{space}/{model}/{version}/views/{table}"
-        )
+        s3_uri = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{space}/{model}/{version}/views/{table}"
+
+        storage_options = {
+            "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
+            "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
+            "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
+        }
+
+        try:
+            arrow_table = pa.Table.from_pylist(rows)
+            self._validate_tableau_schema(arrow_table.schema, table)
+        except Exception as schema_error:
+            self.logger.warning(f"Standard schema failed for {table}: {schema_error}. Doing safe types fallback.")
+            safe_rows = self._convert_to_safe_types(rows)
+            arrow_table = pa.Table.from_pylist(safe_rows)
+
+        if arrow_table is None:
+            raise RuntimeError(f"All schema approaches failed for {table}")
+
         try:
             write_deltalake(
                 s3_uri,
-                pa.Table.from_pylist(rows),
+                arrow_table,
                 mode="append",
                 schema_mode="merge",
-                storage_options={
-                    "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
-                    "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
-                    "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
-                },
+                storage_options=storage_options,
             )
             tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
             if tombstones:
