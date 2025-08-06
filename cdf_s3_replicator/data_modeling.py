@@ -440,6 +440,8 @@ class DataModelingReplicator(Extractor):
         has_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
         if has_data:
             self._send_to_s3(data_model_config=dm_cfg, result=res)
+            self.state_store.set_state(external_id=state_id, high=json.dumps(res.cursors))
+            self.state_store.synchronize()
         else:
             self.logger.info(f"No new data for {state_id} - skipping write")
 
@@ -465,6 +467,8 @@ class DataModelingReplicator(Extractor):
             has_page_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
             if has_page_data:
                 self._send_to_s3(data_model_config=dm_cfg, result=res)
+                self.state_store.set_state(external_id=state_id, high=json.dumps(res.cursors))
+                self.state_store.synchronize()
 
         final_cursors = query.cursors
         if final_cursors:
@@ -1209,11 +1213,7 @@ class DataModelingReplicator(Extractor):
                     },
                 )
 
-                escaped = [x.replace("'", "''") for x in tombstones]
-                escaped_list = ", ".join(f"'{xid}'" for xid in escaped)
-                predicate = f"externalId IN ({escaped_list})"
-
-                dt.delete(predicate)
+                self._delete_tombstones(dt, tombstones)
         except DeltaError as err:
             self.logger.error("Delta write failed: %s", err)
             raise
