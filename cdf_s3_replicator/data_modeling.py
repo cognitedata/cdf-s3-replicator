@@ -180,118 +180,27 @@ class DataModelingReplicator(Extractor):
 
             if dm_cfg.data_models:
                 for model in dm_cfg.data_models:
-                    self._model_xid = model.external_id
-                    self._model_version = None
-
                     try:
-                        if model.version is not None:
-                            self._model_version = str(model.version)
-                            data_model_id = (dm_cfg.space, model.external_id, model.version)
-                            data_models = self.cognite_client.data_modeling.data_models.retrieve(
-                                ids=[data_model_id],
-                                inline_views=False
-                            )
-                            if not data_models:
-                                self.logger.warning(
-                                    "Data model %s version %s not found in space %s",
-                                    model.external_id, model.version, dm_cfg.space
-                                )
-                                continue
+                        model_version, selected_views = self._get_data_model_views(dm_cfg, model)
 
-                            data_model = data_models[0]
-                            if not data_model.views:
-                                self.logger.warning(
-                                    "Data model %s version %s has no views in space %s",
-                                    model.external_id, model.version, dm_cfg.space
-                                )
-                                continue
-
-                            view_ids = data_model.views
-                            wanted = set(model.views) if model.views else None
-                            if wanted is not None:
-                                view_ids = [v for v in view_ids if v.external_id in wanted]
-                                found_views = {v.external_id for v in view_ids}
-                                missing_views = wanted - found_views
-                                if missing_views:
-                                    self.logger.warning(
-                                        "Views %s not found in data model %s version %s",
-                                        ", ".join(sorted(missing_views)), model.external_id, model.version
-                                    )
-
-                            if view_ids:
-                                view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
-                                selected_views = self.cognite_client.data_modeling.views.retrieve(
-                                    ids=view_tuples,
-                                )
-                            else:
-                                selected_views = []
-                        else:
-                            all_data_models = self.cognite_client.data_modeling.data_models.list(
-                                space=dm_cfg.space,
-                                limit=-1,
-                                all_versions=False
-                            )
-                            latest_model = next(
-                                (dm for dm in all_data_models if dm.external_id == model.external_id),
-                                None
-                            )
-                            if not latest_model:
-                                self.logger.error(
-                                    "No data model found with external_id %s in space %s",
-                                    model.external_id, dm_cfg.space
-                                )
-                                continue
-
-                            self._model_version = str(latest_model.version)
-                            if latest_model.views:
-                                view_ids = latest_model.views
-                                wanted = set(model.views) if model.views else None
-
-                                if wanted is not None:
-                                    view_ids = [v for v in view_ids if v.external_id in wanted]
-
-                                    found_views = {v.external_id for v in view_ids}
-                                    missing_views = wanted - found_views
-                                    if missing_views:
-                                        self.logger.warning(
-                                            "Views %s not found in data model %s version %s",
-                                            ", ".join(sorted(missing_views)), model.external_id, self._model_version
-                                        )
-
-                                if view_ids:
-                                    view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
-                                    selected_views = self.cognite_client.data_modeling.views.retrieve(
-                                        ids=view_tuples,
-                                    )
-                                else:
-                                    selected_views = []
-                            else:
-                                self.logger.error(
-                                    "Data model %s version %s has no views defined - cannot proceed",
-                                    model.external_id, self._model_version
-                                )
-                                continue
-
-                        if not self._model_version:
-                            raise RuntimeError(
-                                f"CRITICAL: _model_version not set for {model.external_id} in space {dm_cfg.space}"
-                            )
+                        if not model_version:
+                            continue
 
                         if not selected_views:
                             self.logger.warning(
                                 "No matching views found for model %s version %s in space %s",
-                                model.external_id, self._model_version, dm_cfg.space,
+                                model.external_id, model_version, dm_cfg.space,
                             )
                             continue
 
                         for view in selected_views:
                             try:
-                                self.replicate_view(dm_cfg, model.external_id, self._model_version, view.dump())
+                                self.replicate_view(dm_cfg, model.external_id, model_version, view.dump())
                             except Exception as exc:
                                 self.logger.error(
                                     "Replicating %s.%s (v%s) for model %s version %s failed: %s",
                                     dm_cfg.space, view.external_id, view.version,
-                                    model.external_id, self._model_version, exc,
+                                    model.external_id, model_version, exc,
                                 )
                     except Exception as err:
                         self.logger.error(
@@ -480,10 +389,87 @@ class DataModelingReplicator(Extractor):
         else:
             self.logger.warning(f"Not updating state for {state_id} - no valid cursors")
 
-
-    def _raw_prefix(self, dm_space: str) -> str:
+    def _get_data_model_views(self, dm_cfg: DataModelingConfig, model) -> tuple[str | None, list]:
         """
-        s3://<bucket>/<prefix>/raw/<space>/<model-xid>/<version>/views
+        Centralized method to retrieve and validate data model views.
+        Returns (model_version, selected_views) tuple.
+        """
+        self._model_xid = model.external_id
+        self._model_version = None
+
+        try:
+            if model.version is not None:
+                self._model_version = str(model.version)
+                data_model_id = (dm_cfg.space, model.external_id, model.version)
+                data_models = self.cognite_client.data_modeling.data_models.retrieve(
+                    ids=[data_model_id], inline_views=False
+                )
+
+                if not data_models:
+                    self.logger.warning(
+                        "Data model %s version %s not found in space %s",
+                        model.external_id, model.version, dm_cfg.space
+                    )
+                    return self._model_version, []
+
+                data_model = data_models[0]
+
+            else:
+                all_data_models = self.cognite_client.data_modeling.data_models.list(
+                    space=dm_cfg.space, limit=-1, all_versions=False
+                )
+                data_model = next(
+                    (dm for dm in all_data_models if dm.external_id == model.external_id),
+                    None
+                )
+                if not data_model:
+                    self.logger.error(
+                        "No data model found with external_id %s in space %s",
+                        model.external_id, dm_cfg.space
+                    )
+                    return None, []
+
+                self._model_version = str(data_model.version)
+
+            if not data_model.views:
+                self.logger.warning(
+                    "Data model %s version %s has no views in space %s",
+                    model.external_id, self._model_version, dm_cfg.space
+                )
+                return self._model_version, []
+
+            view_ids = data_model.views
+            wanted = set(model.views) if model.views else None
+
+            if wanted is not None:
+                view_ids = [v for v in view_ids if v.external_id in wanted]
+                found_views = {v.external_id for v in view_ids}
+                missing_views = wanted - found_views
+                if missing_views:
+                    self.logger.warning(
+                        "Views %s not found in data model %s version %s",
+                        ", ".join(sorted(missing_views)), model.external_id, self._model_version
+                    )
+
+            if view_ids:
+                view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
+                selected_views = self.cognite_client.data_modeling.views.retrieve(ids=view_tuples)
+            else:
+                selected_views = []
+
+            return self._model_version, selected_views
+
+        except Exception as err:
+            self.logger.error(
+                "Failed to retrieve data model %s in space %s: %s",
+                model.external_id, dm_cfg.space, err, exc_info=True
+            )
+            return None, []
+
+
+    def _get_s3_prefix(self, dm_space: str, prefix_type: str = "raw") -> str:
+        """
+        Centralized S3 path construction for both raw and publish prefixes.
         """
         model = self._model_xid or "default"
         version = self._model_version
@@ -493,24 +479,16 @@ class DataModelingReplicator(Extractor):
             raise RuntimeError(error_msg)
 
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
-        s3_path = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{dm_space}/{model}/{version}"
+        s3_path = f"s3://{self.s3_cfg.bucket}/{prefix}{prefix_type}/{dm_space}/{model}/{version}"
         return s3_path
+
+
+    def _raw_prefix(self, dm_space: str) -> str:
+        return self._get_s3_prefix(dm_space, "raw")
 
 
     def _publish_prefix(self, dm_space: str) -> str:
-        """
-        s3://<bucket>/<prefix>/publish/<space>/<model-xid>/<version>/views
-        """
-        model = self._model_xid or "default"
-        version = self._model_version
-        if not version:
-            error_msg = f"CRITICAL ERROR: No data model version set for model {model} in space {dm_space}. This should never happen!"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
-
-        prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
-        s3_path = f"s3://{self.s3_cfg.bucket}/{prefix}publish/{dm_space}/{model}/{version}"
-        return s3_path
+        return self._get_s3_prefix(dm_space, "publish")
 
 
     def _current_views_map(self, dm_space: str, selected: set[str] | None = None,
@@ -539,124 +517,35 @@ class DataModelingReplicator(Extractor):
 
         if dm_cfg.data_models:
             for model in dm_cfg.data_models:
-                self._model_xid = model.external_id
-                self._model_version = None
                 try:
+                    model_version, selected_views = self._get_data_model_views(dm_cfg, model)
+
+                    if not model_version:
+                        continue
+
                     view_map = {}
+                    for v in selected_views:
+                        view_map[v.external_id] = {
+                            "version": v.version,
+                            "is_edge": v.used_for == "edge"
+                        }
 
-                    if model.version is not None:
-                        self._model_version = str(model.version)
-                        data_model_id = (dm_space, model.external_id, model.version)
-                        data_models = self.cognite_client.data_modeling.data_models.retrieve(
-                            ids=[data_model_id],
-                            inline_views=False
+                    if not view_map:
+                        self.logger.error(
+                            "No views available for snapshots in data model %s version %s",
+                            model.external_id, model_version
                         )
-
-                        if not data_models:
-                            self.logger.warning(
-                                "Data model %s version %s not found in space %s during snapshot",
-                                model.external_id, model.version, dm_space
-                            )
-                            continue
-
-                        data_model = data_models[0]
-                        if not data_model.views:
-                            self.logger.warning(
-                                "Data model %s version %s has no views in space %s during snapshot",
-                                model.external_id, model.version, dm_space
-                            )
-                            continue
-
-                        view_ids = data_model.views
-                        wanted = set(model.views) if model.views else None
-                        if wanted is not None:
-                            view_ids = [v for v in view_ids if v.external_id in wanted]
-
-                            found_views = {v.external_id for v in view_ids}
-                            missing_views = wanted - found_views
-                            if missing_views:
-                                self.logger.warning(
-                                    "Views %s not found in data model %s version %s during snapshot",
-                                    ", ".join(sorted(missing_views)), model.external_id, model.version
-                                )
-
-                        if view_ids:
-                            view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
-                            selected_views = self.cognite_client.data_modeling.views.retrieve(
-                                ids=view_tuples,
-                            )
-                            for v in selected_views:
-                                view_map[v.external_id] = {
-                                    "version": v.version,
-                                    "is_edge": v.used_for == "edge"
-                                }
-
-                    else:
-                        all_data_models = self.cognite_client.data_modeling.data_models.list(
-                            space=dm_space,
-                            limit=-1,
-                            all_versions=False
-                        )
-                        latest_model = next(
-                            (dm for dm in all_data_models if dm.external_id == model.external_id),
-                            None
-                        )
-                        if not latest_model:
-                            self.logger.error(
-                                "No data model found with external_id %s in space %s",
-                                model.external_id, dm_cfg.space
-                            )
-                            continue
-
-                        self._model_version = str(latest_model.version)
-                        if latest_model.views:
-                            view_ids = latest_model.views
-                            wanted = set(model.views) if model.views else None
-
-                            if wanted is not None:
-                                view_ids = [v for v in view_ids if v.external_id in wanted]
-                                found_views = {v.external_id for v in view_ids}
-                                missing_views = wanted - found_views
-                                if missing_views:
-                                    self.logger.warning(
-                                        "Views %s not found in data model %s version %s during snapshot",
-                                        ", ".join(sorted(missing_views)), model.external_id, self._model_version
-                                    )
-
-                            if view_ids:
-                                view_tuples = [(v.space, v.external_id, v.version) for v in view_ids]
-                                selected_views = self.cognite_client.data_modeling.views.retrieve(
-                                    ids=view_tuples,
-                                )
-
-                                for v in selected_views:
-                                    view_map[v.external_id] = {
-                                        "version": v.version,
-                                        "is_edge": v.used_for == "edge"
-                                    }
-                        else:
-                            self.logger.error(
-                                "Data model %s version %s has no views defined - cannot create snapshots",
-                                model.external_id, self._model_version
-                            )
-                            continue
-
-                    if not self._model_version:
-                        raise RuntimeError(
-                            f"CRITICAL: _model_version not set for {model.external_id} in space {dm_space}"
-                        )
+                        continue
 
                     view_map["_edges"] = {"version": None, "is_edge": True}
                     for xid, meta in view_map.items():
                         try:
-                            self._write_view_snapshot(
-                                dm_space, xid, meta["is_edge"]
-                            )
+                            self._write_view_snapshot(dm_space, xid, meta["is_edge"])
                         except Exception as exc:
                             version_info = f" (v{meta['version']})" if meta["version"] else ""
                             self.logger.exception(
                                 "Snapshot publish failed for %s.%s%s in model %s version %s: %s",
-                                dm_space, xid, version_info, model.external_id, self._model_version, exc,
+                                dm_space, xid, version_info, model.external_id, model_version, exc,
                             )
                 except Exception as err:
                     self.logger.error(
@@ -670,8 +559,6 @@ class DataModelingReplicator(Extractor):
                     )
                     self._model_xid = None
                     self._model_version = None
-
-            return
 
 
     def _edge_folders_for_anchor(self, dm_space: str, anchor_xid: str) -> list[str]:
