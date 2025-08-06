@@ -22,6 +22,7 @@ from cognite.extractorutils.base import CancellationToken, Extractor
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import DeltaError
 import pyarrow.parquet as pq
+import pyarrow.compute as pc
 
 from cdf_s3_replicator import __version__
 from cdf_s3_replicator.config import Config, DataModelingConfig
@@ -693,6 +694,48 @@ class DataModelingReplicator(Extractor):
 
         return edge_view_folders
 
+    def _dedup_latest_nodes(self, delta_path: str) -> pa.Table:
+        """
+        Return a table that keeps only the newest instance of each (space, externalId)
+        without ever materialising the entire view in pandas.
+
+        Algorithm
+        ---------
+        1. Read the Delta table lazily as an Arrow dataset (stream of RecordBatches).
+        2. For each batch:
+           • sort *descending* by lastUpdatedTime
+           • drop duplicates keeping first row per (space, externalId) **within the batch**
+           • keep a Python set of (space, externalId) values we have already emitted
+        3. Concatenate the filtered batches → final Arrow Table.
+        """
+        dset = DeltaTable(delta_path).to_pyarrow_dataset()
+        seen: set[tuple[str, str]] = set()
+        kept_batches: list[pa.RecordBatch] = []
+
+        for batch in dset.to_batches():
+            idx = pc.sort_indices(
+                batch,
+                sort_keys=[("lastUpdatedTime", "descending")]
+            )
+            batch_sorted = pc.take(batch, idx)
+            mask = []
+            space_arr = batch["space"].to_pylist()
+            ext_arr = batch["externalId"].to_pylist()
+            for s, x in zip(space_arr, ext_arr):
+                key = (s, x)
+                if key in seen:
+                    mask.append(False)
+                else:
+                    mask.append(True)
+                    seen.add(key)
+            filtered = batch_sorted.filter(pa.array(mask))
+            if filtered.num_rows:
+                kept_batches.append(filtered)
+
+        if not kept_batches:
+            return self._create_empty_nodes_table()
+
+        return pa.Table.from_batches(kept_batches)
 
     def _write_view_snapshot(self, dm_space: str, view_xid: str, is_edge_only: bool) -> None:
         """
@@ -731,23 +774,13 @@ class DataModelingReplicator(Extractor):
             files_to_update.append((tmp_edge, fin_edge, "edges"))
 
             if not is_edge_only:
+
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
                 try:
-                    node_tbl = DeltaTable(node_raw).to_pyarrow_table()
-
-                    if node_tbl.num_rows > 0:
-                        if node_tbl.num_rows > self.LARGE_TABLE_THRESHOLD:
-                            df = node_tbl.to_pandas(split_blocks=True, self_destruct=True)
-                        else:
-                            df = node_tbl.to_pandas()
-
-                        df = (
-                            df.sort_values("lastUpdatedTime", ascending=False)
-                            .drop_duplicates(["space", "externalId"], keep="first")
-                        )
-                        node_tbl = pa.Table.from_pandas(df, preserve_index=False)
-
-                        del df
+                    if DeltaTable(node_raw).files():
+                        node_tbl = (self._dedup_latest_nodes(node_raw))
+                    else:
+                        node_tbl = self._create_empty_nodes_table()
 
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
@@ -952,6 +985,170 @@ class DataModelingReplicator(Extractor):
         return out
 
 
+    def _sanitize_rows_for_tableau(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Sanitize row data to ensure Tableau/Hyper compatibility.
+        Converts problematic data types to safe alternatives.
+        """
+        if not rows:
+            return rows
+
+        column_types = {}
+        non_null_cols = set()
+        sanitized_rows = []
+
+        for row in rows:
+            sanitized_row = {}
+            for key, value in row.items():
+
+                if value is None:
+                    sanitized_value = None
+                elif isinstance(value, (dict, list)):
+                    sanitized_value = json.dumps(value) if value else None
+                elif isinstance(value, bytes):
+                    sanitized_value = value.decode('utf-8', errors='replace')
+                elif hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool)):
+                    sanitized_value = str(value)
+                else:
+                    sanitized_value = value
+
+                if sanitized_value is not None:
+                    non_null_cols.add(key)
+                    value_type = type(sanitized_value).__name__
+                    if key not in column_types:
+                        column_types[key] = set()
+                    column_types[key].add(value_type)
+
+                sanitized_row[key] = sanitized_value
+
+            sanitized_rows.append(sanitized_row)
+
+        core_fields = {
+            'space', 'instanceType', 'externalId', 'version',
+            'lastUpdatedTime', 'createdTime', 'deletedTime',
+            'startNode.space', 'startNode.externalId',
+            'endNode.space', 'endNode.externalId', 'direction'
+        }
+
+        mixed_type_columns = {}
+        for col, types in column_types.items():
+            if len(types) > 1 and col not in core_fields:
+                mixed_type_columns[col] = types
+                self.logger.warning(f"Mixed types in column {col}: {types}. Converting to string.")
+
+        if mixed_type_columns:
+            for row in sanitized_rows:
+                for col in mixed_type_columns:
+                    if row.get(col) is not None:
+                        row[col] = str(row[col])
+
+        all_cols = set(rows[0].keys()) if rows else set()
+        null_cols = all_cols - non_null_cols
+        if null_cols:
+            for row in sanitized_rows:
+                for col in null_cols:
+                    row.pop(col, None)
+
+        return sanitized_rows
+
+    def _validate_tableau_schema(self, schema: pa.Schema, table_name: str) -> None:
+        """Check for known problematic types that Tableau can't handle."""
+        problematic_types = []
+
+        for field in schema:
+            field_type = field.type
+
+            is_problematic = (
+                    field_type in (pa.binary(), pa.large_binary()) or
+                    field_type == pa.null() or
+                    str(field_type).startswith('extension') or
+                    str(field_type).startswith('union')
+            )
+
+            try:
+                logical_type = getattr(field_type, 'logical_type', None)
+                if logical_type and hasattr(logical_type, '__dict__'):
+                    logical_dict = logical_type.__dict__ if hasattr(logical_type, '__dict__') else {}
+                    if 'UNKNOWN' in str(logical_dict) or 'unknown' in str(logical_dict).lower():
+                        is_problematic = True
+            except Exception:
+                if 'UNKNOWN' in str(field_type):
+                    is_problematic = True
+
+            if is_problematic:
+                problematic_types.append(f"{field.name}: {field_type}")
+
+        if problematic_types:
+            raise ValueError(f"Tableau-incompatible types found: {problematic_types}")
+
+
+    def _convert_to_safe_types(self, rows: list[dict[str, Any]]) -> pa.Table:
+        """Last resort: convert everything except core fields to strings."""
+        if not rows:
+            return pa.Table.from_pylist([])
+
+        core_fields = {
+            'space': pa.string(),
+            'instanceType': pa.string(),
+            'externalId': pa.string(),
+            'version': pa.int64(),
+            'lastUpdatedTime': pa.int64(),
+            'createdTime': pa.int64(),
+            'deletedTime': pa.int64(),
+            'startNode.space': pa.string(),
+            'startNode.externalId': pa.string(),
+            'endNode.space': pa.string(),
+            'endNode.externalId': pa.string(),
+            'direction': pa.string()
+        }
+
+        all_columns = set()
+        for row in rows:
+            all_columns.update(row.keys())
+
+        schema_fields = []
+        for col in sorted(all_columns):
+            if col in core_fields:
+                schema_fields.append(pa.field(col, core_fields[col]))
+            else:
+                schema_fields.append(pa.field(col, pa.string()))
+
+        safe_schema = pa.schema(schema_fields)
+
+        safe_rows = []
+        for row in rows:
+            safe_row = {}
+            for field in safe_schema:
+                col_name = field.name
+                value = row.get(col_name)
+
+                if value is None:
+                    safe_row[col_name] = None
+                elif field.type == pa.string():
+                    safe_row[col_name] = str(value) if value is not None else None
+                elif field.type == pa.int64():
+                    try:
+                        safe_row[col_name] = int(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        safe_row[col_name] = None
+                else:
+                    safe_row[col_name] = value
+
+            safe_rows.append(safe_row)
+
+        return pa.Table.from_pylist(safe_rows, schema=safe_schema)
+
+
+    def _delete_tombstones(self, dt: DeltaTable, tombstones: list[str], chunk: int = 5_000):
+
+        for i in range(0, len(tombstones), chunk):
+            escaped = [x.replace("'", "''") for x in tombstones]
+            escaped_list = ", ".join(f"'{xid}'" for xid in escaped)
+            predicate = f"externalId IN ({escaped_list})"
+
+            dt.delete(predicate)
+
+
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
         Safely append rows to S3-based Delta table with data validation and cleanup.
@@ -962,12 +1159,11 @@ class DataModelingReplicator(Extractor):
         if not rows:
             return
 
-        if rows:
-            null_cols = [k for k in rows[0] if all(r.get(k) is None for r in rows)]
-            if null_cols:
-                for r in rows:
-                    for k in null_cols:
-                        r.pop(k, None)
+        rows = self._sanitize_rows_for_tableau(rows)
+
+        if not rows:
+            self.logger.info(f"No data remaining after sanitization for {table}")
+            return
 
         model = self._model_xid or "default"
         version = self._model_version
