@@ -313,7 +313,11 @@ class DataModelingReplicator(Extractor):
                 CogniteAPIError,
                 requests.exceptions.RequestException,
                 Exception
-        ))),
+        )) and not (
+                isinstance(exc, CogniteAPIError) and
+                exc.code == 400 and
+                "cursor has expired" in str(exc).lower()
+        )),
         wait=wait_exponential_jitter(initial=1, max=30),
         stop=stop_after_attempt(5),
         reraise=True,
@@ -338,18 +342,35 @@ class DataModelingReplicator(Extractor):
         try:
             res = self._safe_sync(self.cognite_client, query)
         except CogniteAPIError as e:
-            self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with original cursors...")
-            query.cursors = original_cursors
-            try:
-                res = self._safe_sync(self.cognite_client, query)
-            except CogniteAPIError as e:
-                self.logger.error(f"Retry sync also failed for {state_id}: {e}")
-                if original_cursors is not None:
-                    self.logger.warning(f"Resetting cursors for {state_id} as last resort")
-                    query.cursors = None
+            if e.code == 400 and "cursor has expired" in str(e).lower():
+                self.logger.warning(f"Cursor expired for {state_id}. Restarting sync from beginning...")
+
+                self.state_store.set_state(external_id=state_id, high=None)
+                self.state_store.synchronize()
+
+                query.cursors = None
+
+                try:
                     res = self._safe_sync(self.cognite_client, query)
-                else:
-                    raise e
+                    self.logger.info(f"Successfully restarted sync for {state_id} after cursor expiration")
+                except CogniteAPIError as retry_error:
+                    self.logger.error(f"Failed to restart sync for {state_id} after cursor expiration: {retry_error}")
+                    raise retry_error
+            else:
+                self.logger.warning(f"Initial sync failed for {state_id}: {e}. Retrying with original cursors...")
+                query.cursors = original_cursors
+                try:
+                    res = self._safe_sync(self.cognite_client, query)
+                except CogniteAPIError as retry_error:
+                    self.logger.error(f"Retry sync also failed for {state_id}: {retry_error}")
+                    if original_cursors is not None:
+                        self.logger.warning(f"Resetting cursors for {state_id} as last resort")
+                        query.cursors = None
+                        self.state_store.set_state(external_id=state_id, high=None)
+                        self.state_store.synchronize()
+                        res = self._safe_sync(self.cognite_client, query)
+                    else:
+                        raise retry_error
 
         query_start_ms = int(time.time() * 1000)
         has_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
@@ -373,8 +394,17 @@ class DataModelingReplicator(Extractor):
                 res = self._safe_sync(self.cognite_client, query)
                 page_count += 1
             except CogniteAPIError as e:
-                self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Keeping current cursors...")
-                break
+                if e.code == 400 and "cursor has expired" in str(e).lower():
+                    self.logger.warning(
+                        f"Cursor expired during pagination for {state_id} on page {page_count}. "
+                        f"Need to restart entire sync. Breaking pagination loop..."
+                    )
+                    self.state_store.set_state(external_id=state_id, high=None)
+                    self.state_store.synchronize()
+                    break
+                else:
+                    self.logger.warning(f"Page {page_count} failed for {state_id}: {e}. Keeping current cursors...")
+                    break
 
             has_page_data = any(len(res.data.get(k, [])) > 0 for k in ("nodes", "edges", "edges_out", "edges_in"))
             if has_page_data:
