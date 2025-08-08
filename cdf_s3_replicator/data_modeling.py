@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Dict, Optional, Union
 import pyarrow as pa
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 from cognite.client.data_classes.data_modeling.ids import ViewId, ContainerId
 from cognite.client.data_classes.data_modeling.query import (
     EdgeResultSetExpression,
@@ -34,6 +34,13 @@ from cdf_s3_replicator.extractor_config import CdfExtractorConfig
 from datetime import datetime, timedelta, UTC
 from itertools import chain
 import botocore.config as bc
+
+
+def _should_retry_exc(exc: BaseException) -> bool:
+    if isinstance(exc, CogniteAPIError):
+        return not (exc.code == 400 and "cursor has expired" in str(exc).lower())
+
+    return isinstance(exc, requests.exceptions.RequestException) or isinstance(exc, Exception)
 
 
 class DataModelingReplicator(Extractor):
@@ -308,16 +315,9 @@ class DataModelingReplicator(Extractor):
             for i in result.data.get(rs, [])
         )
 
+
     @retry(
-        retry=(lambda exc: isinstance(exc, (
-                CogniteAPIError,
-                requests.exceptions.RequestException,
-                Exception
-        )) and not (
-                isinstance(exc, CogniteAPIError) and
-                exc.code == 400 and
-                "cursor has expired" in str(exc).lower()
-        )),
+        retry=retry_if_exception(_should_retry_exc),
         wait=wait_exponential_jitter(initial=1, max=30),
         stop=stop_after_attempt(5),
         reraise=True,
