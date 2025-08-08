@@ -1107,8 +1107,7 @@ class DataModelingReplicator(Extractor):
             self._validate_tableau_schema(arrow_table.schema, table)
         except Exception as schema_error:
             self.logger.warning(f"Standard schema failed for {table}: {schema_error}. Doing safe types fallback.")
-            safe_rows = self._convert_to_safe_types(rows)
-            arrow_table = pa.Table.from_pylist(safe_rows)
+            arrow_table = self._convert_to_safe_types(rows)
 
         if arrow_table is None:
             raise RuntimeError(f"All schema approaches failed for {table}")
