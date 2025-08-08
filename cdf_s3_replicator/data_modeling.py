@@ -252,7 +252,7 @@ class DataModelingReplicator(Extractor):
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         container_pred = HasData(
-            containers=[ContainerId(dm_cfg.space, view["externalId"])]
+            containers=[ContainerId(view["space"], view["externalId"])]
         )
         view_pred = HasData(views=[ViewId(view["space"],
                                           view["externalId"],
@@ -273,7 +273,7 @@ class DataModelingReplicator(Extractor):
         props = list(view["properties"])
         if view.get("usedFor") != "edge":
             container_pred = HasData(
-                containers=[ContainerId(dm_cfg.space, view["externalId"])]
+                containers=[ContainerId(view["space"], view["externalId"])]
             )
             view_pred = HasData(views=[vid])
             node_filter = Or(container_pred, view_pred)
