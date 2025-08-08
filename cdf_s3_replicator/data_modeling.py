@@ -78,7 +78,6 @@ class DataModelingReplicator(Extractor):
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         self._s3: boto3.client | None = None
         self._s3_created_at: datetime | None = None
-        self.LARGE_TABLE_THRESHOLD = 1_000_000  # Threshold for large views to optimize memory usage
 
 
     def _make_s3_client(self) -> boto3.client:
