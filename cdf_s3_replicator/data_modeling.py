@@ -1065,10 +1065,10 @@ class DataModelingReplicator(Extractor):
     def _delete_tombstones(self, dt: DeltaTable, tombstones: list[str], chunk: int = 5_000):
 
         for i in range(0, len(tombstones), chunk):
-            escaped = [x.replace("'", "''") for x in tombstones]
+            part = tombstones[i:i + chunk]
+            escaped = [x.replace("'", "''") for x in part]
             escaped_list = ", ".join(f"'{xid}'" for xid in escaped)
             predicate = f"externalId IN ({escaped_list})"
-
             dt.delete(predicate)
 
 
