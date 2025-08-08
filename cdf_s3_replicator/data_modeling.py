@@ -965,8 +965,8 @@ class DataModelingReplicator(Extractor):
                     if row.get(col) is not None:
                         row[col] = str(row[col])
 
-        all_cols = set(rows[0].keys()) if rows else set()
-        null_cols = all_cols - non_null_cols
+        all_cols: set[str] = set().union(*(r.keys() for r in sanitized_rows)) if sanitized_rows else set()
+        null_cols = {c for c in all_cols if all(r.get(c) is None for r in sanitized_rows)}
         if null_cols:
             for row in sanitized_rows:
                 for col in null_cols:
