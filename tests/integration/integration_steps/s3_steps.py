@@ -25,7 +25,7 @@ def get_ts_delta_table(
     token = credential.get_token("https://storage.azure.com/.default")
     return DeltaTable(
         lakehouse_timeseries_path,
-        storage_options={"bearer_token": token.token, "use_fabric_endpoint": "true"},
+        storage_options={"bearer_token": token.token, "use_s3_endpoint": "true"},
     )
 
 
@@ -55,7 +55,7 @@ def prepare_lakehouse_dataframe_for_comparison(
     return dataframe
 
 
-def write_timeseries_data_to_fabric(
+def write_timeseries_data_to_s3(
     credential: DefaultAzureCredential, data_frame: DataFrame, table_path: str
 ):
     print(table_path)
@@ -66,19 +66,19 @@ def write_timeseries_data_to_fabric(
         table_path,
         data_frame,
         mode="append",
-        storage_options={"bearer_token": token, "use_fabric_endpoint": "true"},
+        storage_options={"bearer_token": token, "use_s3_endpoint": "true"},
     )
     return None
 
 
-def remove_time_series_data_from_fabric(
+def remove_time_series_data_from_s3(
     credential: DefaultAzureCredential, table_path: str
 ):
     token = credential.get_token("https://storage.azure.com/.default").token
     try:
         DeltaTable(
             table_uri=table_path,
-            storage_options={"bearer_token": token, "use_fabric_endpoint": "true"},
+            storage_options={"bearer_token": token, "use_s3_endpoint": "true"},
         ).delete()
     except Exception:
         pass
@@ -90,7 +90,7 @@ def prepare_test_dataframe_for_comparison(dataframe: pd.DataFrame) -> pd.DataFra
     return dataframe
 
 
-def assert_timeseries_data_in_fabric(
+def assert_timeseries_data_in_s3(
     external_id: str,
     data_points: pd.DataFrame,
     timeseries_path: str,
@@ -106,12 +106,12 @@ def assert_timeseries_data_in_fabric(
     assert_frame_equal(test_dataframe, lakehouse_dataframe, check_dtype=False)
 
 
-def assert_data_model_instances_in_fabric(
+def assert_data_model_instances_in_s3(
     instance_table_paths: list,
     instance_dataframes: dict[str, pd.DataFrame],
     azure_credential: DefaultAzureCredential,
 ):
-    # Assert the data model is populated in a Fabric lakehouse
+    # Assert the data model is populated in a S3 lakehouse
     for path in instance_table_paths:
         delta_table = get_ts_delta_table(azure_credential, path)
         lakehouse_dataframe = delta_table.to_pandas()
@@ -127,7 +127,7 @@ def assert_data_model_instances_in_fabric(
 def assert_data_model_instances_update(
     update_dataframe: tuple, azure_credential: DefaultAzureCredential
 ):
-    # Assert the data model changes including versions are propagated to a Fabric lakehouse
+    # Assert the data model changes including versions are propagated to a S3 lakehouse
     path = lakehouse_table_name(update_dataframe[0])
     delta_table = get_ts_delta_table(azure_credential, path)
     lakehouse_dataframe = delta_table.to_pandas()
@@ -135,12 +135,12 @@ def assert_data_model_instances_update(
     assert_frame_equal(update_dataframe[1], lakehouse_dataframe, check_dtype=False)
 
 
-def assert_events_data_in_fabric(
+def assert_events_data_in_s3(
     events_path: str,
     events_dataframe: pd.DataFrame,
     azure_credential: DefaultAzureCredential,
 ):
-    # Assert events data is populated in a Fabric lakehouse
+    # Assert events data is populated in a S3 lakehouse
     events_from_lakehouse = read_deltalake_timeseries(events_path, azure_credential)
 
     # Prepare the lakehouse data for comparison
@@ -164,7 +164,7 @@ def parse_abfss_url(url: str) -> tuple[str, str, str]:
 
     if "@" not in parsed_url.netloc or "." not in parsed_url.netloc:
         raise ValueError(
-            "URL is not in the expected format.  Expected format is abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>"
+            "URL is not in the expected format.  Expected format is abfss://<workspace>@onelake.dfs.s3.microsoft.com/<lakehouse>"
         )
 
     container_id = parsed_url.netloc.split("@")[0]
@@ -184,7 +184,7 @@ def get_lakehouse_file_client(
     lakehouse_file_path = lakehouse_file_path + "/" + table_name + "/"
 
     service_client = DataLakeServiceClient(
-        f"https://{account_name}.dfs.fabric.microsoft.com", credential=credential
+        f"https://{account_name}.dfs.s3.microsoft.com", credential=credential
     )
     file_system_client = service_client.get_file_system_client(workspace_name)
     directory_client = file_system_client.get_directory_client(lakehouse_file_path)

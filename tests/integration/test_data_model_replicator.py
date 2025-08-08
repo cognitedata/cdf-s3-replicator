@@ -9,15 +9,15 @@ from cognite.client.data_classes.data_modeling import Space, SpaceApply, DataMod
 from cognite.client.data_classes.data_modeling.ids import DataModelId
 from cognite.extractorutils.base import CancellationToken
 from cognite.extractorutils.metrics import safe_get
-from cdf_fabric_replicator.metrics import Metrics
-from cdf_fabric_replicator.data_modeling import DataModelingReplicator
+from cdf_s3_replicator.metrics import Metrics
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
 from tests.integration.integration_steps.cdf_steps import (
     apply_data_model_instances_in_cdf,
 )
-from tests.integration.integration_steps.fabric_steps import (
+from tests.integration.integration_steps.s3_steps import (
     delete_delta_table_data,
     lakehouse_table_name,
-    assert_data_model_instances_in_fabric,
+    assert_data_model_instances_in_s3,
     assert_data_model_instances_update,
 )
 from integration_steps.data_model_generation import Node, Edge, create_node, create_edge
@@ -304,10 +304,10 @@ def test_data_model_sync_service_creation(
 ):
     # Create a data model in CDF
     apply_data_model_instances_in_cdf(node_list, edge_list, cognite_client)
-    # Run data model sync service between CDF and Fabric
+    # Run data model sync service between CDF and S3
     test_data_modeling_replicator.process_spaces()
-    # Assert the data model is populated in a Fabric lakehouse
-    assert_data_model_instances_in_fabric(
+    # Assert the data model is populated in a S3 lakehouse
+    assert_data_model_instances_in_s3(
         instance_table_paths, instance_dataframes, azure_credential
     )
 
@@ -322,11 +322,11 @@ def test_data_model_sync_service_update(
     cognite_client,
     azure_credential,
 ):
-    # Apply instances and run data model sync service between CDF and Fabric
+    # Apply instances and run data model sync service between CDF and S3
     apply_data_model_instances_in_cdf(node_list, edge_list, cognite_client)
     test_data_modeling_replicator.process_spaces()
     # Update instances in CDF and run data model sync
     apply_data_model_instances_in_cdf(updated_node_list, [], cognite_client)
     test_data_modeling_replicator.process_spaces()
-    # Assert the data model changes including versions are propagated to a Fabric lakehouse
+    # Assert the data model changes including versions are propagated to a S3 lakehouse
     assert_data_model_instances_update(update_dataframe, azure_credential)

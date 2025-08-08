@@ -35,10 +35,6 @@
         },
         "unevaluatedProperties": false
       }
-    },
-    "lakehouse_prefix": {
-      "type": "string",
-      "description": "(S3 path) Optional override for the table root. If absent the code builds `s3://<bucket>/<prefix><space>/tables` automatically."
     }
   }
 }

@@ -5,19 +5,15 @@ from cognite.extractorutils.base import CancellationToken
 
 from cognite.extractorutils.metrics import safe_get
 
-from cdf_fabric_replicator.time_series import TimeSeriesReplicator
-from cdf_fabric_replicator.data_modeling import DataModelingReplicator
-from cdf_fabric_replicator.extractor import CdfFabricExtractor
-from cdf_fabric_replicator.event import EventsReplicator
-from cdf_fabric_replicator.raw import RawTableReplicator
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
 
-from cdf_fabric_replicator.metrics import Metrics
-from cdf_fabric_replicator.log_config import LOGGING_CONFIG
+from cdf_s3_replicator.metrics import Metrics
+from cdf_s3_replicator.log_config import LOGGING_CONFIG
 
 
 def main() -> None:
     logging.config.dictConfig(LOGGING_CONFIG)
-    logging.info("Starting CDF Fabric Replicator")
+    logging.info("Starting CDF S3 Replicator")
     stop_event = CancellationToken()
     worker_list = []
 

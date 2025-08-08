@@ -28,28 +28,12 @@ extractor:
     ingest-batch-size: 100000
     poll-time: 5
 
-subscriptions:
-    - external_id: testSubscription
-      partitions:
-          - 0
-      lakehouse_abfss_path_dps: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/${DPS_TABLE_NAME}
-      lakehouse_abfss_path_ts: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/${TS_TABLE_NAME}
 
 # sync data model
 data_modeling:
     - space: IntegrationTestSpace
       lakehouse_prefix: ${LAKEHOUSE_ABFSS_PREFIX}
 
-source:
-    abfss_prefix: ${LAKEHOUSE_ABFSS_PREFIX}
-    event_path: ${EXTRACTOR_EVENT_PATH}
-    file_path: ${EXTRACTOR_FILE_PATH}
-    raw_time_series_path: ${EXTRACTOR_RAW_TS_PATH}
-    data_set_id: ${EXTRACTOR_DATASET_ID}
 
 destination:
     time_series_prefix: ""
-
-event:
-    lakehouse_abfss_path_events: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/${EVENT_TABLE_NAME}
-    batch_size: 5

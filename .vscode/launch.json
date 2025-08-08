@@ -18,7 +18,7 @@
             "name": "poetry run",
             "type": "debugpy",
             "request": "launch",
-            "module": "cdf_fabric_replicator",
+            "module": "cdf_s3_replicator",
             "args": [
                 "example_config.yaml"
             ],

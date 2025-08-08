@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "cdf-fabric-replicator-chart.fullname" . }}
+  name: {{ include "cdf-s3-replicator-chart.fullname" . }}
   labels:
-    {{- include "cdf-fabric-replicator-chart.labels" . | nindent 4 }}
+    {{- include "cdf-s3-replicator-chart.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "cdf-fabric-replicator-chart.selectorLabels" . | nindent 6 }}
+      {{- include "cdf-s3-replicator-chart.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -18,7 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "cdf-fabric-replicator-chart.selectorLabels" . | nindent 8 }}
+        {{- include "cdf-s3-replicator-chart.selectorLabels" . | nindent 8 }}
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -69,46 +69,11 @@ spec:
                 configMapKeyRef:
                   name: cdf-conn-config
                   key: COGNITE_STATE_TABLE
-            - name: LAKEHOUSE_ABFSS_PREFIX
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: LAKEHOUSE_ABFSS_PREFIX
-            - name: EXTRACTOR_EVENT_PATH
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: EXTRACTOR_EVENT_PATH
-            - name: EXTRACTOR_FILE_PATH
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: EXTRACTOR_FILE_PATH
-            - name: EXTRACTOR_RAW_TS_PATH
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: EXTRACTOR_RAW_TS_PATH
             - name: EXTRACTOR_DATASET_ID
               valueFrom:
                 configMapKeyRef:
                   name: cdf-conn-config
                   key: EXTRACTOR_DATASET_ID
-            - name: EXTRACTOR_TS_PREFIX
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: EXTRACTOR_TS_PREFIX
-            - name: EVENT_TABLE_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: EVENT_TABLE_NAME
-            - name: LAKEHOUSE_TIMESERIES_TABLE
-              valueFrom:
-                configMapKeyRef:
-                  name: cdf-conn-config
-                  key: LAKEHOUSE_TIMESERIES_TABLE
             - name: COGNITE_STATE_DB
               valueFrom:
                 configMapKeyRef:
@@ -119,6 +84,31 @@ spec:
                 configMapKeyRef:
                   name: cdf-conn-config
                   key: COGNITE_EXTRACTION_PIPELINE
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_S3_BUCKET
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: AWS_REGION
+            - name: S3_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: cdf-conn-config
+                  key: S3_PREFIX
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

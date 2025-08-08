@@ -1,6 +1,6 @@
 apiVersion: v2
-name: cdf-fabric-replicator-chart
-description: CDF Fabric Connector
+name: cdf-s3-replicator-chart
+description: CDF S3 Connector
 
 # A chart can be either an 'application' or a 'library' chart.
 #

@@ -1,15 +1,15 @@
-# Syncing data between Fabric Lakehouse and Fabric KQL
+# Syncing data between S3 Lakehouse and S3 KQL
 
 ## Backgroud
 
-The CDF Fabric Replicator copies data into a [Fabric Lakehouse](https://learn.microsoft.com/en-us/fabric/data-engineering/lakehouse-overview) in [Delta Lake](https://delta.io/) format. This allows for querying data in Power Bi. However, in order to use [Real-Time Analytics](https://learn.microsoft.com/en-us/fabric/real-time-analytics/overview), your data must be in a Fabric KQL database. The following instructions demonstrate how to create a shortcut to get data from a Fabric Lakehouse into Fabric KQL.
+The CDF S3 Replicator copies data into a [S3 Lakehouse](https://learn.microsoft.com/en-us/s3/data-engineering/lakehouse-overview) in [Delta Lake](https://delta.io/) format. This allows for querying data in Power Bi. However, in order to use [Real-Time Analytics](https://learn.microsoft.com/en-us/s3/real-time-analytics/overview), your data must be in a S3 KQL database. The following instructions demonstrate how to create a shortcut to get data from a S3 Lakehouse into S3 KQL.
 
 ## Prerequisites 
-* Fabric workspace
-* Fabric Lakehouse populated by CDF Fabric Replicator
+* S3 workspace
+* S3 Lakehouse populated by CDF S3 Replicator
 
 ## Setup shortcut
-1. Open your Fabric workspace
+1. Open your S3 workspace
 2. Select New -> More options -> KQL Database
 3. Choose a new name and press "Create"
 4. From KQL database, click on the dropdown next to "New" and click "OneLake shortcut"

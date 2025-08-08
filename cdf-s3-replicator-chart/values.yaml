@@ -1,4 +1,4 @@
-# Default values for cdf-fabric-replicator-chart.
+# Default values for cdf-s3-replicator-chart.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
@@ -62,13 +62,3 @@ env:
     stateDb: ""
     stateTable: ""
     extractionPipeline: ""
-  lakehouse:
-    timeseriesTable: ""
-    abfssPrefix: ""
-  extractor:
-    eventPath: ""
-    filePath: ""
-    rawTsPath: ""
-    datasetId: ""
-    tsPrefix: ""
-    eventTableName: ""

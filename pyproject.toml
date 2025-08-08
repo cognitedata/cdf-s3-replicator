@@ -1,37 +1,53 @@
-[tool.poetry]
-name = "cdf_fabric_replicator"
+[project]
+name = "cdf-s3-replicator"
 version = "0.3.3"
-description = "Stream data from CDF to Fabric/Onelake"
-authors = ["Murad Saeter <murad.sater@cognite.com>"]
+description = "Stream data from CDF to S3"
+authors = [
+    { name = "Murad Saeter", email = "murad.sater@cognite.com" },
+    { name = "Marwan Elsharkawi", email = "marwan.elsharkawi@cognite.com" }
+]
 readme = "README.md"
-packages = [{ include = "cdf_fabric_replicator" }]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "cognite-sdk>=7.26.0,<8.0.0",
+    "cognite-extractor-utils>=7.0.0,<8.0.0",
+    "azure-identity>=1.16.1,<2.0.0",
+    "azure-storage-file-datalake>=12.14.0,<13.0.0",
+    "deltalake>=0.16.0,<1.0.0",
+    "pandas>=2.2.1,<3.0.0",
+    "pywin32>=308; sys_platform == 'win32'",
+    "boto3>=1.38.28",
+    "pyarrow>=20.0.0",
+    "prometheus-client>=0.21.1,<1.0.0",
+    "tenacity>=9.0.0,<9.1.2",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.13"
-cognite-sdk = ">=7.26.0,<8.0.0"
-cognite-extractor-utils = ">=7.0.0,<8.0.0"
-azure-identity = ">=1.16.1,<2.0.0"
-azure-storage-file-datalake = ">=12.14.0,<13.0.0"
-deltalake = ">=0.16.0,<1.0.0"
-pandas = ">=2.2.1,<3.0.0"
-pywin32 = { version = ">=308", markers = "sys_platform == 'win32'" }
-boto3 = "^1.38.28"
-pyarrow = "^20.0.0"
+[project.scripts]
+cdf-s3-replicator = "cdf_s3_replicator.__main__:main"
 
-[tool.poetry.scripts]
-cdf_fabric_replicator = "cdf_fabric_replicator.__main__:main"
-
-[tool.poetry.group.dev.dependencies]
-coverage = { version = ">=7.4.4,<8.0.0", extras = ["toml"] }
-pytest = ">=7.2.0"
-pytest-mock = ">=3.6.1,<4.0.0"
-pre-commit = ">=4.0.1"
-mypy = ">=1.14.1"
-pyinstaller = ">=6.11.1"
+[project.optional-dependencies]
+dev = [
+    "coverage[toml]>=7.4.4,<8.0.0",
+    "pytest>=7.2.0",
+    "pytest-mock>=3.6.1,<4.0.0",
+    "pre-commit>=4.0.1",
+    "mypy>=1.14.1",
+    "pyinstaller>=6.11.1",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "coverage[toml]>=7.4.4,<8.0.0",
+    "pytest>=7.2.0",
+    "pytest-mock>=3.6.1,<4.0.0",
+    "pre-commit>=4.0.1",
+    "mypy>=1.14.1",
+    "pyinstaller>=6.11.1",
+]
 
 [tool.black]
 line-length = 120
