@@ -1,711 +1,601 @@
-import pytest
-from unittest.mock import patch, Mock
+import json
+from types import SimpleNamespace
+from datetime import datetime, UTC
+from unittest.mock import Mock, patch
 
-from collections import UserDict
 import pyarrow as pa
+import pytest
+import logging
 
 from cdf_s3_replicator.data_modeling import DataModelingReplicator
-from cdf_s3_replicator.config import Config, DataModelingConfig
-
-from cognite.client.data_classes.data_modeling.instances import Node, Edge
-from cognite.client.data_classes.data_modeling import DirectRelationReference
-from cognite.client.data_classes.data_modeling.ids import ViewId
-from cognite.client.data_classes.data_modeling.query import (
-    Query,
-    QueryResult,
-    NodeListWithCursor,
-    EdgeListWithCursor,
-    Select,
-    SourceSelector,
-    NodeResultSetExpression,
-    EdgeResultSetExpression,
-)
-from cognite.client.data_classes.filters import HasData, Equals
 from cognite.client.exceptions import CogniteAPIError
-from deltalake.exceptions import DeltaError
+from requests.exceptions import RequestException
+from cdf_s3_replicator import data_modeling as dm
+
+# -------------------------
+# Fixtures / helpers
+# -------------------------
+
+class _ViewKey:
+    def __init__(self, external_id):
+        self.external_id = external_id
+    def __hash__(self):
+        return hash(self.external_id)
+    def __eq__(self, other):
+        return getattr(other, "external_id", None) == self.external_id
 
 
 @pytest.fixture
-def test_data_modeling_replicator():
-    with patch(
-        "cdf_s3_replicator.data_modeling.DefaultAzureCredential"
-    ) as mock_credential:
-        mock_credential.return_value.get_token.return_value = Mock(token="test_token")
-        replicator = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
-        replicator.logger = Mock()
-        replicator.cognite_client = Mock()
-        replicator.config = Mock()
-        replicator.state_store = Mock()
-        yield replicator
+def replicator():
+    r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    r.logger = Mock()
+    r.s3_cfg = SimpleNamespace(bucket="test-bucket", prefix="pre", region="us-east-1")
+    r.config = SimpleNamespace(destination=SimpleNamespace(s3=r.s3_cfg))
+    r.state_store = Mock()
+    r.cognite_client = Mock()
+    r._s3 = Mock()
+    r._s3_created_at = datetime.now(UTC)
+    return r
 
 
-@pytest.fixture
-def mock_data_modeling_config():
-    yield DataModelingConfig(
-        space="test_space", lakehouse_prefix="test_abfss_prefix"
+def mk_node(space="sp", xid="n1", ver=1, last=111, created=100, deleted=None, view_xid="viewA"):
+    props_data = {_ViewKey(view_xid): {"p1": "v1", "p2": 2}}
+    properties = SimpleNamespace(data=props_data)
+    return SimpleNamespace(
+        space=space,
+        external_id=xid,
+        version=ver,
+        last_updated_time=last,
+        created_time=created,
+        deleted_time=deleted,
+        properties=properties,
     )
 
 
-@pytest.fixture
-def node_view_query():
-    yield Query(
-        with_={
-            "nodes": NodeResultSetExpression(
-                filter=HasData(
-                    views=[
-                        ViewId(
-                            space="test_space",
-                            external_id="test_id",
-                            version="test_version",
-                        )
-                    ]
-                )
-            )
-        },
-        select={
-            "nodes": Select(
-                [
-                    SourceSelector(
-                        source=ViewId(
-                            space="test_space",
-                            external_id="test_id",
-                            version="test_version",
-                        ),
-                        properties=["prop1", "prop2"],
-                    )
-                ]
-            )
-        },
+def mk_edge(space="sp", xid="e1", ver=1, last=111, created=100, deleted=None, type_xid="edgeType",
+            start=("sp", "n1"), end=("sp", "n2"), prop_view="edgeView"):
+    start_node = SimpleNamespace(space=start[0], external_id=start[1])
+    end_node = SimpleNamespace(space=end[0], external_id=end[1])
+    type_obj = SimpleNamespace(external_id=type_xid)
+    props_data = {_ViewKey(prop_view): {"ep": 42}}
+    properties = SimpleNamespace(data=props_data)
+    return SimpleNamespace(
+        space=space,
+        external_id=xid,
+        version=ver,
+        last_updated_time=last,
+        created_time=created,
+        deleted_time=deleted,
+        start_node=start_node,
+        end_node=end_node,
+        type=type_obj,
+        properties=properties,
     )
 
 
-@pytest.fixture
-def edge_view_query():
-    yield Query(
-        with_={
-            "edges": EdgeResultSetExpression(
-                filter=Equals(
-                    ["edge", "type"], {"space": "test_space", "externalId": "test_id"}
-                )
-            )
-        },
-        select={
-            "edges": Select(
-                [
-                    SourceSelector(
-                        source=ViewId(
-                            space="test_space",
-                            external_id="test_id",
-                            version="test_version",
-                        ),
-                        properties=["prop1", "prop2"],
-                    )
-                ]
-            )
-        },
+# -------------------------
+# Query builders
+# -------------------------
+
+def test_node_query_for_view_builds_expected(replicator):
+    dm_cfg = SimpleNamespace(space="sp")
+    view = {"space": "vsp", "externalId": "vxid", "version": 7, "properties": {"a": 1, "b": 2}}
+    q = replicator._node_query_for_view(dm_cfg, view)
+
+    assert "nodes" in q.with_
+    assert q.with_["nodes"].limit == 2000
+    assert "nodes" in q.select
+
+    qd = q.dump()
+    assert "nodes" in qd["select"]
+
+    srcs = qd["select"]["nodes"]["sources"]
+    assert len(srcs) == 1
+    src = srcs[0]["source"]
+    assert src["space"] == "vsp"
+    assert src["externalId"] == "vxid"
+    assert src["version"] == 7
+    assert set(srcs[0]["properties"]) == {"a", "b"}
+
+
+def test_node_query_uses_view_space_for_containerid(monkeypatch, replicator):
+    seen = {}
+
+    def fake_container_id(space, externalId):
+        seen["space"] = space
+        seen["externalId"] = externalId
+        return (space, externalId)
+
+    monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
+
+    dm_cfg = SimpleNamespace(space="cfg_space")
+    view = {"space": "view_space", "externalId": "vx", "version": 1, "properties": {"p": 1}}
+
+    replicator._node_query_for_view(dm_cfg, view)
+
+    assert seen["space"] == "view_space"
+    assert seen["externalId"] == "vx"
+
+
+def test_edge_query_for_view_uses_view_space_for_containerid_when_anchor(monkeypatch, replicator):
+    seen = {}
+
+    def fake_container_id(space, externalId):
+        seen["space"] = space
+        seen["externalId"] = externalId
+        return (space, externalId)
+
+    monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
+
+    dm_cfg = SimpleNamespace(space="cfg_space")
+    view = {"space": "view_space", "externalId": "vx", "version": 3, "properties": {"p": 1}}
+
+    replicator._edge_query_for_view(dm_cfg, view)
+
+    assert seen["space"] == "view_space"
+    assert seen["externalId"] == "vx"
+
+
+def test_edge_query_for_view_node_anchor_builds_expected(replicator):
+    dm_cfg = SimpleNamespace(space="sp")
+    view = {"space": "vsp", "externalId": "vx", "version": 3, "properties": {"p": 1}}
+    q = replicator._edge_query_for_view(dm_cfg, view)
+    assert set(q.with_.keys()) == {"nodes", "edges_out", "edges_in"}
+    assert "edges_out" in q.select and "edges_in" in q.select
+
+
+def test_edge_query_for_view_edgeonly_builds_expected(replicator):
+    dm_cfg = SimpleNamespace(space="sp")
+    view = {"space": "vsp", "externalId": "edgeView", "version": 1, "properties": {"x": 1}, "usedFor": "edge"}
+    q = replicator._edge_query_for_view(dm_cfg, view)
+    assert "edges" in q.with_
+    assert "edges" in q.select
+
+
+def test_get_data_model_views_explicit_version_not_found_logs_and_empty(monkeypatch, replicator, caplog):
+    dm_cfg = SimpleNamespace(space="sp")
+    model = SimpleNamespace(external_id="m", version=3, views=None)
+
+    replicator.logger = logging.getLogger(replicator.name)
+
+    cc = replicator.cognite_client
+    cc.data_modeling.data_models.retrieve.return_value = []
+
+    with caplog.at_level(logging.WARNING, logger=replicator.name):
+        ver, views = replicator._get_data_model_views(dm_cfg, model)
+
+    assert ver == "3"
+    assert views == []
+    assert "not found" in caplog.text.lower()
+
+
+def test_get_data_model_views_latest_version_and_subset_with_missing(monkeypatch, replicator, caplog):
+    dm_cfg = SimpleNamespace(space="sp")
+    model = SimpleNamespace(external_id="m", version=None, views=["vA","vMissing"])
+
+    replicator.logger = logging.getLogger(replicator.name)
+
+    cc = replicator.cognite_client
+
+    latest_model = SimpleNamespace(
+        external_id="m",
+        version=9,
+        views=[
+            SimpleNamespace(space="sp", external_id="vA", version=1),
+            SimpleNamespace(space="sp", external_id="vB", version=2),
+        ],
     )
+    cc.data_modeling.data_models.list.return_value = [latest_model]
+
+    retrieved_view = SimpleNamespace(external_id="vA", version=1, used_for="node")
+    cc.data_modeling.views.retrieve.return_value = [retrieved_view]
+
+    with caplog.at_level(logging.WARNING, logger=replicator.name):
+        ver, views = replicator._get_data_model_views(dm_cfg, model)
+
+    assert ver == "9"
+    assert views == [retrieved_view]
+    assert "not found" in caplog.text.lower()
 
 
-@pytest.fixture
-def edge_query():
-    yield Query(
-        with_={"edges": EdgeResultSetExpression()},
-        select={"edges": Select()},
+def test_get_data_model_views_explicit_version_no_views(monkeypatch, replicator, caplog):
+    dm_cfg = SimpleNamespace(space="sp")
+    model = SimpleNamespace(external_id="m", version=2, views=None)
+
+    replicator.logger = logging.getLogger(replicator.name)
+
+    cc = replicator.cognite_client
+    found = SimpleNamespace(external_id="m", version=2, views=[])
+    cc.data_modeling.data_models.retrieve.return_value = [found]
+
+    with caplog.at_level(logging.WARNING, logger=replicator.name):
+        ver, views = replicator._get_data_model_views(dm_cfg, model)
+
+    assert ver == "2"
+    assert views == []
+    assert "has no views" in caplog.text.lower()
+
+
+# -------------------------
+# Extract instances
+# -------------------------
+
+def test_extract_instances_nodes_and_edges_dirs(replicator):
+    nodes = [mk_node(xid="n1", view_xid="A"), mk_node(xid="n2", view_xid="A")]
+    edges = [mk_edge(xid="e1", type_xid="edgeType"),
+             mk_edge(xid="e2", type_xid="edgeType")]
+    edges_out = [mk_edge(xid="eo1"), mk_edge(xid="eo2")]
+    edges_in = [mk_edge(xid="ei1"), mk_edge(xid="ei2")]
+    res = SimpleNamespace(
+        data={
+            "nodes": nodes,
+            "edges": edges,
+            "edges_out": edges_out,
+            "edges_in": edges_in,
+        }
     )
+    out = DataModelingReplicator._extract_instances(res)
+
+    assert "A/nodes" in out and len(out["A/nodes"]) == 2
+
+    assert "_edges" in out and len(out["_edges"]) == 2
+
+    assert "edgeType/edges" in out and len(out["edgeType/edges"]) == 4
+    dirs = {row.get("direction") for row in out["edgeType/edges"]}
+    assert dirs == {"in", "out"}
 
 
-@pytest.fixture
-def mock_view():
-    yield {
-        "space": "test_space",
-        "externalId": "test_id",
-        "version": "test_version",
-        "usedFor": "node",
-        "properties": {"prop1": "value1", "prop2": "value2"},
-    }
+# -------------------------
+# Sanitization & schema fallback
+# -------------------------
 
-
-@pytest.fixture
-def view_id():
-    yield ViewId(space="test_space", external_id="test_view", version=1)
-
-
-@pytest.fixture
-def input_data_properties(view_id):
-    property = UserDict()
-    property_content = UserDict()
-    property_content["prop1"] = "value1"
-    property[view_id] = property_content
-    yield property
-
-
-@pytest.fixture
-def input_data_types():
-    yield {
-        "node_type": DirectRelationReference(
-            space="test_space", external_id="test_type_node"
-        ),
-        "edge_type": DirectRelationReference(
-            space="test_space", external_id="test_type_edge"
-        ),
-    }
-
-
-@pytest.fixture
-def input_data_node_ref():
-    yield {
-        "start_node": DirectRelationReference(space="test_space", external_id="id1"),
-        "end_node": DirectRelationReference(space="test_space", external_id="id2"),
-    }
-
-
-@pytest.fixture
-def input_data_nodes(input_data_properties, input_data_types):
-    type = input_data_types["node_type"]
-    yield [
-        Node(
-            space="test_space",
-            external_id="id1",
-            version=1,
-            last_updated_time=12345600,
-            created_time=12345600,
-            deleted_time=12378900,
-            type=type,
-            properties=input_data_properties,
-        ),
-        Node(
-            space="test_space",
-            external_id="id2",
-            version=1,
-            last_updated_time=12345600,
-            created_time=12345600,
-            deleted_time=None,
-            type=type,
-            properties=input_data_properties,
-        ),
+def test_sanitize_rows_for_tableau_mixed_types_and_structs(replicator):
+    rows = [
+        {
+            "space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
+            "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
+            "a": {"k": "v"},
+            "b": [1, 2, 3],
+            "c": b"bytes",
+            "d": 1,
+        },
+        {
+            "space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
+            "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
+            "a": None,
+            "b": None,
+            "c": "text",
+            "d": "string-here",
+        },
     ]
+    out = replicator._sanitize_rows_for_tableau(rows)
+    assert isinstance(out[0]["a"], (str, type(None)))
+    assert isinstance(out[0]["b"], (str, type(None)))
+    assert out[0]["c"] == "bytes"
+    assert isinstance(out[0]["d"], str) and isinstance(out[1]["d"], str)
 
 
-@pytest.fixture
-def input_data_edges(input_data_properties, input_data_types, input_data_node_ref):
-    type = input_data_types["edge_type"]
-    start_node = input_data_node_ref["start_node"]
-    end_node = input_data_node_ref["end_node"]
-    yield [
-        Edge(
-            space="test_space",
-            external_id="id1",
-            version=1,
-            last_updated_time=12345600,
-            created_time=12345600,
-            deleted_time=12378900,
-            start_node=start_node,
-            end_node=end_node,
-            type=type,
-            properties=input_data_properties,
-        ),
-        Edge(
-            space="test_space",
-            external_id="id2",
-            version=1,
-            last_updated_time=12345600,
-            created_time=12345600,
-            deleted_time=None,
-            start_node=start_node,
-            end_node=end_node,
-            type=type,
-            properties=input_data_properties,
-        ),
+def test_sanitize_drops_columns_null_in_all_rows(replicator):
+    rows = [
+        {"space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
+         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None},
+        {"space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
+         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None, "only_in_second": None},
     ]
+    out = replicator._sanitize_rows_for_tableau(rows)
+    assert all("only_in_second" not in r for r in out)
 
 
-@pytest.fixture
-def query_result_nodes(input_data_nodes):
-    query_result = QueryResult(
-        nodes=NodeListWithCursor(resources=input_data_nodes, cursor=None)
+@patch.object(DataModelingReplicator, "_validate_tableau_schema", side_effect=ValueError("tableShouldFail"))
+@patch("cdf_s3_replicator.data_modeling.write_deltalake")
+def test_delta_append_schema_fallback_to_safe_types(mock_write, _mock_validate, replicator, caplog):
+    replicator._model_xid = "modelA"
+    replicator._model_version = "2"
+    rows = [{
+        "space": "sp", "instanceType": "node", "externalId": "n1",
+        "version": 1, "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
+        "badcol": b"binarydata"
+    }]
+
+    replicator.logger = logging.getLogger(replicator.name)
+
+    with caplog.at_level(logging.WARNING, logger=replicator.name):
+        replicator._delta_append("tbl", rows, "sp")
+
+    assert "doing safe types fallback" in caplog.text.lower()
+    assert mock_write.called
+
+
+def test_convert_to_safe_types_core_int_fields_bad_values_become_none(replicator):
+    rows = [{
+        "space": "sp",
+        "instanceType": "node",
+        "externalId": "x",
+        "version": "v1",
+        "lastUpdatedTime": "nope",
+        "createdTime": 123,
+        "deletedTime": None,
+        "someProp": {"a": 1},
+    }]
+    tbl = replicator._convert_to_safe_types(rows)
+    cols = {f.name: f.type for f in tbl.schema}
+    assert str(cols["version"]) == "int64"
+    assert str(cols["lastUpdatedTime"]) == "int64"
+    assert tbl.column("version").to_pylist()[0] is None
+    assert tbl.column("lastUpdatedTime").to_pylist()[0] is None
+    assert str(cols["someProp"]) == "string"
+
+
+@patch("cdf_s3_replicator.data_modeling.write_deltalake")
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
+def test_delta_append_writes_and_tombstones(mock_dt_cls, mock_write, replicator):
+    replicator._model_xid = "modelA"
+    replicator._model_version = "2"
+    rows = [
+        {"space": "sp", "instanceType": "node", "externalId": "n1",
+         "version": 1, "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None},
+        {"space": "sp", "instanceType": "node", "externalId": "del_me",
+         "version": 1, "lastUpdatedTime": 2, "createdTime": 1, "deletedTime": 123},
+    ]
+    dt = Mock()
+    mock_dt_cls.return_value = dt
+
+    replicator._delta_append("A/nodes", rows, "sp")
+
+    assert mock_write.call_count == 1
+    args, kwargs = mock_write.call_args
+    assert args[0].startswith("s3://test-bucket/pre/raw/sp/modelA/2/views/A/nodes")
+    assert dt.delete.call_count == 1
+    predicate = dt.delete.call_args[0][0]
+    assert "del_me" in predicate
+
+
+@patch("cdf_s3_replicator.data_modeling.write_deltalake")
+def test_delta_append_without_prefix_has_clean_uri(mock_write, replicator):
+    replicator._model_xid = "m"
+    replicator._model_version = "1"
+    replicator.s3_cfg.prefix = None
+
+    rows = [{"space": "sp","instanceType":"node","externalId":"n1","version":1,"lastUpdatedTime":1,"createdTime":1,"deletedTime":None}]
+    replicator._delta_append("A/nodes", rows, "sp")
+
+    uri = mock_write.call_args[0][0]
+    assert uri == "s3://test-bucket/raw/sp/m/1/views/A/nodes"
+    assert "//raw/" not in uri
+
+
+def test_delete_tombstones_chunks(replicator):
+    dt = Mock()
+    tombstones = [f"id{i}" for i in range(12)]
+    replicator._delete_tombstones(dt, tombstones, chunk=5)
+
+    assert dt.delete.call_count == 3
+
+    preds = [c.args[0] for c in dt.delete.call_args_list]
+    assert not any(all(f"id{i}" in p for i in range(12)) for p in preds)
+    assert any("id0" in preds[0] and "id5" not in preds[0] for _ in [0])
+
+
+@patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
+def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
+    replicator.state_store.get_state.return_value = (None, '{"a": "b"}')
+    err = CogniteAPIError(message="cursor has expired", code=400)
+    fake_node = SimpleNamespace(last_updated_time=1234567890)
+    second = SimpleNamespace(
+        data={"nodes": [fake_node]},
+        cursors={"next": 1}
     )
-    yield query_result
-
-
-@pytest.fixture
-def query_result_edges(input_data_edges):
-    yield QueryResult(edges=EdgeListWithCursor(resources=input_data_edges, cursor=None))
-
-
-@pytest.fixture
-def expected_node_instance():
-    yield {
-        "test_space_test_view": [
-            {
-                "space": "test_space",
-                "instanceType": "node",
-                "externalId": "id1",
-                "version": 1,
-                "lastUpdatedTime": 12345600,
-                "createdTime": 12345600,
-                "prop1": "value1",
-            },
-            {
-                "space": "test_space",
-                "instanceType": "node",
-                "externalId": "id2",
-                "version": 1,
-                "lastUpdatedTime": 12345600,
-                "createdTime": 12345600,
-                "prop1": "value1",
-            },
+    replicator._safe_sync = Mock(
+        side_effect=[
+            err,
+            second,
+            SimpleNamespace(data={"nodes": []}, cursors=None),
         ]
-    }
-
-
-@pytest.fixture
-def expected_edge_instance():
-    yield {
-        "test_space_edges": [
-            {
-                "space": "test_space",
-                "instanceType": "edge",
-                "externalId": "id1",
-                "version": 1,
-                "lastUpdatedTime": 12345600,
-                "createdTime": 12345600,
-                "prop1": "value1",
-                "startNode": {"space": "test_space", "externalId": "id1"},
-                "endNode": {"space": "test_space", "externalId": "id2"},
-            },
-            {
-                "space": "test_space",
-                "instanceType": "edge",
-                "externalId": "id2",
-                "version": 1,
-                "lastUpdatedTime": 12345600,
-                "createdTime": 12345600,
-                "prop1": "value1",
-                "startNode": {"space": "test_space", "externalId": "id1"},
-                "endNode": {"space": "test_space", "externalId": "id2"},
-            },
-        ]
-    }
-
-
-@pytest.fixture
-def query_result_empty():
-    yield QueryResult()
-
-
-@pytest.fixture
-def mock_write_deltalake(mocker):
-    yield mocker.patch(
-        "cdf_s3_replicator.data_modeling.DataModelingReplicator.write_instances_to_lakehouse_tables",
-        return_value=None,
     )
 
+    q = SimpleNamespace(cursors={"a": "b"})
+    dm_cfg = SimpleNamespace(space="sp")
 
-@pytest.fixture
-def lakehouse_prefix():
-    yield "test_abfss_prefix"
+    replicator._iterate_and_write(dm_cfg, "state_id", q)
+
+    replicator.state_store.set_state.assert_any_call(external_id="state_id", high=None)
+    assert mock_send.call_count >= 1
 
 
-@pytest.fixture
-def replicator_config(mock_data_modeling_config):
-    yield Config(
-        type=None,
-        cognite=None,
-        version="1",
-        logger=None,
-        extractor=None,
-        subscriptions=None,
-        event=None,
-        raw_tables=None,
-        data_modeling=mock_data_modeling_config,
-        source=None,
-        destination=None,
+@patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
+def test_iterate_and_write_cursor_expired_mid_pagination(mock_send, replicator):
+    replicator.state_store.get_state.return_value = (None, None)
+
+    page1 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors={"c": 1})
+    err = CogniteAPIError(message="cursor has expired", code=400)
+
+    replicator._safe_sync = Mock(side_effect=[page1, err])
+
+    q = SimpleNamespace(cursors=None)
+    dm_cfg = SimpleNamespace(space="sp")
+
+    replicator._iterate_and_write(dm_cfg, "sid", q)
+
+    assert mock_send.call_count == 1
+    replicator.state_store.set_state.assert_any_call(external_id="sid", high=None)
+
+
+@patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
+def test_iterate_and_write_pagination_updates_state(mock_send, replicator):
+    replicator.state_store.get_state.return_value = (None, None)
+
+    fake_node = SimpleNamespace(last_updated_time=0)
+
+    page1 = SimpleNamespace(data={"nodes": [fake_node]}, cursors={"c": 1})
+    page2 = SimpleNamespace(data={"nodes": []}, cursors=None)
+    replicator._safe_sync = Mock(side_effect=[page1, page2])
+
+    q = SimpleNamespace(cursors=None)
+    dm_cfg = SimpleNamespace(space="sp")
+
+    replicator._iterate_and_write(dm_cfg, "sid", q)
+
+    assert mock_send.call_count == 1
+    replicator.state_store.set_state.assert_any_call(external_id="sid", high=json.dumps({"c": 1}))
+
+
+@patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
+def test_iterate_and_write_short_circuits_on_future_change(mock_send, replicator, monkeypatch):
+    monkeypatch.setattr("time.time", lambda: 1000.0)  # query_start_ms = 1_000_000
+
+    page1 = SimpleNamespace(
+        data={"nodes": [SimpleNamespace(last_updated_time=1_000_000)]},
+        cursors={"c": 1},
+    )
+    page2 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors=None)
+
+    replicator.state_store.get_state.return_value = (None, None)
+    replicator._safe_sync = Mock(side_effect=[page1, page2])
+
+    q = SimpleNamespace(cursors=None)
+    dm_cfg = SimpleNamespace(space="sp")
+
+    replicator._iterate_and_write(dm_cfg, "sid", q)
+
+    assert mock_send.call_count == 1
+    assert replicator._safe_sync.call_count == 1
+
+
+def test_get_s3_prefix_requires_version(replicator):
+    replicator._model_xid = "m"
+    replicator._model_version = None
+    with pytest.raises(RuntimeError):
+        replicator._get_s3_prefix("space", "raw")
+
+
+@patch.object(DataModelingReplicator, "_list_prefixes")
+def test_edge_folders_for_anchor_filters_correctly(mock_list, replicator):
+    replicator._model_xid = "m"
+    replicator._model_version = "1"
+    mock_list.return_value = [
+        "pre/raw/sp/m/1/views/A/edges/",
+        "pre/raw/sp/m/1/views/A.something/edges/",
+        "pre/raw/sp/m/1/views/B/edges/",
+    ]
+    out = replicator._edge_folders_for_anchor("sp", "A")
+    assert any(x.endswith("/views/A/edges") for x in out)
+    assert any("/views/A.something/edges" in x for x in out)
+    assert all("/views/B/edges" not in x for x in out)
+
+
+def test_ensure_s3_recreates_client_after_50_minutes(monkeypatch, replicator):
+    first = object()
+    second = object()
+
+    calls = {"n": 0}
+    def fake_make():
+        calls["n"] += 1
+        return first if calls["n"] == 1 else second
+
+    monkeypatch.setattr(DataModelingReplicator, "_make_s3_client", lambda self: fake_make())
+
+    replicator._s3 = None
+    replicator._s3_created_at = None
+    replicator._ensure_s3()
+    assert replicator._s3 is first
+
+    replicator._s3_created_at = datetime(2020, 1, 1, tzinfo=UTC)  # very old
+    replicator._ensure_s3()
+    assert replicator._s3 is second
+
+
+@patch("cdf_s3_replicator.data_modeling.pq.write_table")
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
+@patch.object(DataModelingReplicator, "_atomic_replace_files")
+@patch.object(DataModelingReplicator, "_edge_folders_for_anchor", return_value=[])  # <— add this
+def test_write_view_snapshot_smoke(mock_atomic, mock_delta, mock_write, replicator, tmp_path):
+    replicator._model_xid = "m"
+    replicator._model_version = "1"
+
+    tbl = Mock()
+    tbl.to_pyarrow_table.return_value = pa.Table.from_pylist([])
+    tbl.files.return_value = []
+    mock_delta.return_value = tbl
+
+    replicator._write_view_snapshot("sp", "A", is_edge_only=False)
+
+    assert mock_atomic.call_count == 1
+    assert len(mock_write.call_args_list) >= 2
+
+
+@patch("cdf_s3_replicator.data_modeling.pq.write_table")
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
+@patch.object(DataModelingReplicator, "_atomic_replace_files")
+def test_write_view_snapshot_edge_only(mock_atomic, mock_delta, mock_write, replicator):
+    replicator._model_xid = "m"
+    replicator._model_version = "1"
+
+    tbl = Mock()
+    tbl.to_pyarrow_table.return_value = pa.Table.from_pylist([])
+    mock_delta.return_value = tbl
+
+    replicator._write_view_snapshot("sp", "A", is_edge_only=True)
+
+    written_paths = [args[1] for args, _ in mock_write.call_args_list]
+    assert all("nodes" not in p for p in written_paths)
+
+
+def test_atomic_replace_files_cleans_temps_on_failure(replicator, monkeypatch):
+    updates = [
+        ("s3://bkt/tmp1.parquet", "s3://bkt/final1.parquet", "edges"),
+        ("s3://bkt/tmp2.parquet", "s3://bkt/final2.parquet", "nodes"),
+    ]
+    s3 = Mock()
+    replicator._s3 = s3
+
+    def fail_intentionally(*a, **k):
+        raise RuntimeError("copy failed")
+    monkeypatch.setattr(DataModelingReplicator, "_copy_and_verify", lambda *a, **k: fail_intentionally())
+
+    with pytest.raises(RuntimeError, match="copy failed"):
+        replicator._atomic_replace_files(updates)
+
+    keys = {c.kwargs["Key"] for c in s3.delete_object.call_args_list}
+    assert keys == {"tmp1.parquet", "tmp2.parquet"}
+    assert s3.delete_object.call_count == 2
+
+
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
+def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicator):
+    schema = pa.schema([
+        ("space", pa.string()),
+        ("externalId", pa.string()),
+        ("lastUpdatedTime", pa.int64()),
+    ])
+
+    b1 = pa.record_batch(
+        [pa.array(["s","s"]),
+         pa.array(["a","b"]),
+         pa.array([20, 5])],
+        schema=schema
+    )
+    b2 = pa.record_batch(
+        [pa.array(["s","s"]),
+         pa.array(["a","c"]),
+         pa.array([10, 7])],
+        schema=schema
     )
 
+    class _FakeDataset:
+        def to_batches(self): return [b1, b2]
 
-class TestDataModelingReplicator:
-    @patch("cdf_s3_replicator.data_modeling.time.sleep")
-    def test_run(
-        self, mock_sleep, mock_data_modeling_config, test_data_modeling_replicator
-    ):
-        # Mock the stop_event.is_set response to only run replicator once
-        test_data_modeling_replicator.stop_event.is_set.side_effect = [
-            False,
-            True,
-        ]
-        # Mock the config
-        test_data_modeling_replicator.config = Mock(
-            data_modeling=[mock_data_modeling_config], extractor=Mock(poll_time=1)
-        )
-        # Mock the process_spaces method since it's not the focus of this test
-        test_data_modeling_replicator.process_spaces = Mock()
-        # Call the method under test
-        test_data_modeling_replicator.run()
-        # Asssert that the process_spaces method was called
-        test_data_modeling_replicator.process_spaces.assert_called_once()
+    fake_table = Mock()
+    fake_table.to_pyarrow_dataset.return_value = _FakeDataset()
+    mock_dt.return_value = fake_table
 
-    def test_run_no_data_modeling(self, test_data_modeling_replicator):
-        # Mock the config
-        test_data_modeling_replicator.config = Mock(
-            data_modeling=None, extractor=Mock(poll_time=1)
-        )
-        # Mock the process_spaces method to assert not called
-        test_data_modeling_replicator.process_spaces = Mock()
-        # Call the method under test
-        test_data_modeling_replicator.run()
-        # Asssert that the process_spaces method was not called
-        test_data_modeling_replicator.process_spaces.assert_not_called()
+    out = replicator._dedup_latest_nodes("ignored")
 
-    def test_process_spaces(
-        self, mock_data_modeling_config, test_data_modeling_replicator
-    ):
-        # Mock the data_modeling config
-        test_data_modeling_replicator.config.data_modeling = [mock_data_modeling_config]
+    rows = set(zip(out.column("externalId").to_pylist(),
+                   out.column("lastUpdatedTime").to_pylist()))
+    assert rows == {("a", 20), ("b", 5), ("c", 7)}
 
-        # Mock the views.list response
-        test_data_modeling_replicator.cognite_client.data_modeling.views.list.return_value = Mock(
-            dump=Mock(
-                return_value=[{"externalId": "test_id", "version": "test_version"}]
-            )
-        )
 
-        # Mock the process_instances method since it's not the focus of this test
-        test_data_modeling_replicator.process_instances = Mock()
-
-        # Call the method under test
-        test_data_modeling_replicator.process_spaces()
-
-        # Assert that the process_instances method was called with the expected arguments
-        test_data_modeling_replicator.process_instances.assert_any_call(
-            mock_data_modeling_config,
-            "state_test_space_test_id_test_version",
-            {"externalId": "test_id", "version": "test_version"},
-        )
-        test_data_modeling_replicator.process_instances.assert_any_call(
-            mock_data_modeling_config, "state_test_space_edges"
-        )
-
-    def test_process_spaces_cognite_error(
-        self, mock_data_modeling_config, test_data_modeling_replicator
-    ):
-        # Mock the data_modeling config
-        test_data_modeling_replicator.config.data_modeling = [mock_data_modeling_config]
-        # Raise CogniteAPIError as from views.list
-        test_data_modeling_replicator.cognite_client.data_modeling.views.list.side_effect = CogniteAPIError(
-            message="test_error", code=500
-        )
-        # Call the method under test and assert it raises CogniteAPIError
-        with pytest.raises(CogniteAPIError):
-            test_data_modeling_replicator.process_spaces()
-        # Assert that logger.error was called
-        test_data_modeling_replicator.logger.error.assert_called_once()
-
-    def test_process_instances_with_view(
-        self, mock_data_modeling_config, mock_view, test_data_modeling_replicator
-    ):
-        # Mock the generate_query responses
-        test_data_modeling_replicator.generate_query_based_on_view = Mock(
-            return_value="test_query"
-        )
-        test_data_modeling_replicator.generate_query_based_on_edge = Mock()
-
-        # Mock the write_instance_to_lakehouse method
-        test_data_modeling_replicator.write_instance_to_lakehouse = Mock()
-
-        # Call the method under test
-        test_data_modeling_replicator.process_instances(
-            mock_data_modeling_config,
-            "state_test_space_test_id_test_version",
-            mock_view,
-        )
-
-        # Assert that the generate_query_based_on_view method was called with the expected arguments
-        test_data_modeling_replicator.generate_query_based_on_view.assert_called_once_with(
-            mock_view
-        )
-
-        # Assert that the write_instance_to_lakehouse method was called with the expected arguments
-        test_data_modeling_replicator.write_instance_to_lakehouse.assert_called_once_with(
-            mock_data_modeling_config,
-            "state_test_space_test_id_test_version",
-            "test_query",
-        )
-
-        # Assert that the generate_query_based_on_edge method was not called
-        test_data_modeling_replicator.generate_query_based_on_edge.assert_not_called()
-
-    def test_process_instances_with_edge(
-        self, mock_data_modeling_config, test_data_modeling_replicator
-    ):
-        # Mock the generate_query responses
-        test_data_modeling_replicator.generate_query_based_on_view = Mock()
-        test_data_modeling_replicator.generate_query_based_on_edge = Mock(
-            return_value="test_query"
-        )
-
-        # Mock the write_instance_to_lakehouse method
-        test_data_modeling_replicator.write_instance_to_lakehouse = Mock()
-
-        # Call the method under test
-        test_data_modeling_replicator.process_instances(
-            mock_data_modeling_config, "state_test_space_edges"
-        )
-
-        # Assert that the generate_query_based_on_view method was not called
-        test_data_modeling_replicator.generate_query_based_on_view.assert_not_called()
-
-        # Assert that the write_instance_to_lakehouse method was called with the expected arguments
-        test_data_modeling_replicator.write_instance_to_lakehouse.assert_called_once_with(
-            mock_data_modeling_config, "state_test_space_edges", "test_query"
-        )
-
-        # Assert that the generate_query_based_on_edge method was called
-        test_data_modeling_replicator.generate_query_based_on_edge.assert_called_once()
-
-    def test_generate_query_based_on_view_node(
-        self, node_view_query, mock_view, test_data_modeling_replicator
-    ):
-        # Call the method under test
-        result_query = test_data_modeling_replicator.generate_query_based_on_view(
-            mock_view
-        )
-
-        # Assert that the query is as expected
-        assert result_query == node_view_query
-
-    def test_generate_query_based_on_view_edge(
-        self, edge_view_query, mock_view, test_data_modeling_replicator
-    ):
-        # Modify the view to be used for edge
-        mock_view["usedFor"] = "edge"
-        # Call the method under test
-        result_query = test_data_modeling_replicator.generate_query_based_on_view(
-            mock_view
-        )
-
-        # Assert that the query is as expected
-        assert result_query == edge_view_query
-
-    def test_generate_query_based_on_edge(
-        self, edge_query, test_data_modeling_replicator
-    ):
-        # Call the method under test
-        result_query = test_data_modeling_replicator.generate_query_based_on_edge()
-
-        # Assert that the query is as expected
-        assert result_query == edge_query
-
-    def test_write_instance_to_lakehouse(
-        self,
-        mock_data_modeling_config,
-        query_result_nodes,
-        query_result_empty,
-        node_view_query,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.state_store.get_state.return_value = [
-            None,
-            '{"cursor" : "test_cursor"}',
-        ]
-        # Mock the get_instances method
-        test_data_modeling_replicator.send_to_lakehouse = Mock()
-
-        # Mock two responses for instance sync, first with node data second without
-        test_data_modeling_replicator.cognite_client.data_modeling.instances.sync.side_effect = [
-            query_result_nodes,
-            query_result_empty,
-        ]
-
-        # Call the method under test
-        test_data_modeling_replicator.write_instance_to_lakehouse(
-            mock_data_modeling_config,
-            "state_test_space_test_id_test_version",
-            node_view_query,
-        )
-
-        # Assert that the get_instances method was called with the expected arguments
-        test_data_modeling_replicator.send_to_lakehouse.assert_any_call(
-            data_model_config=mock_data_modeling_config,
-            state_id="state_test_space_test_id_test_version",
-            result=query_result_nodes,
-        )
-
-    def test_write_instance_to_lakehouse_instance_sync_errors(
-        self,
-        mock_data_modeling_config,
-        node_view_query,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.state_store.get_state.return_value = [
-            None,
-            '{"cursor" : "test_cursor"}',
-        ]
-        # Raise CogniteAPIError from instances.sync
-        test_data_modeling_replicator.cognite_client.data_modeling.instances.sync.side_effect = [
-            CogniteAPIError(message="test_error", code=500),
-            CogniteAPIError(message="test_error", code=500),
-        ]
-
-        # Call the method under test and assert it raises CogniteAPIError
-        with pytest.raises(CogniteAPIError):
-            test_data_modeling_replicator.write_instance_to_lakehouse(
-                mock_data_modeling_config,
-                "state_test_space_test_id_test_version",
-                node_view_query,
-            )
-        # Assert that logger.error was called
-        test_data_modeling_replicator.logger.error.assert_called_once()
-
-    def test_write_instance_to_lakehouse_instance_sync_errors_after_send(
-        self,
-        mock_data_modeling_config,
-        query_result_nodes,
-        node_view_query,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.state_store.get_state.return_value = [
-            None,
-            '{"cursor" : "test_cursor"}',
-        ]
-        # Mock send_to_lakehouse
-        test_data_modeling_replicator.send_to_lakehouse = Mock()
-
-        # Raise CogniteAPIError from instances.sync after a success
-        test_data_modeling_replicator.cognite_client.data_modeling.instances.sync.side_effect = [
-            query_result_nodes,
-            CogniteAPIError(message="test_error", code=500),
-            CogniteAPIError(message="test_error", code=500),
-        ]
-
-        # Call the method under test and assert it raises CogniteAPIError
-        with pytest.raises(CogniteAPIError):
-            test_data_modeling_replicator.write_instance_to_lakehouse(
-                mock_data_modeling_config,
-                "state_test_space_test_id_test_version",
-                node_view_query,
-            )
-        # Assert that logger.error was called
-        test_data_modeling_replicator.logger.error.assert_called_once()
-
-    def test_get_instances_null(
-        self, query_result_empty, test_data_modeling_replicator
-    ):
-        instances = test_data_modeling_replicator.get_instances(
-            query_result_empty, is_edge=False
-        )
-        assert len(instances) == 0
-
-    def test_get_instances_nodes(
-        self, query_result_nodes, expected_node_instance, test_data_modeling_replicator
-    ):
-        expected_nodes = expected_node_instance
-        actual_nodes = test_data_modeling_replicator.get_instances(
-            query_result_nodes, is_edge=False
-        )
-        assert actual_nodes == expected_nodes
-
-    def test_get_instances_edges(
-        self, query_result_edges, expected_edge_instance, test_data_modeling_replicator
-    ):
-        expected_edges = expected_edge_instance
-        actual_edges = test_data_modeling_replicator.get_instances(
-            query_result_edges, is_edge=True
-        )
-        assert actual_edges == expected_edges
-
-    def test_send_to_lakehouse_null(
-        self,
-        query_result_empty,
-        mock_write_deltalake,
-        replicator_config,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.send_to_lakehouse(
-            data_model_config=replicator_config.data_modeling,
-            state_id="test_state_id",
-            result=query_result_empty,
-        )
-        mock_write_deltalake.assert_not_called()
-
-    def test_send_to_lakehouse_nodes(
-        self,
-        query_result_nodes,
-        mock_write_deltalake,
-        replicator_config,
-        expected_node_instance,
-        lakehouse_prefix,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.send_to_lakehouse(
-            data_model_config=replicator_config.data_modeling,
-            state_id="test_state_id",
-            result=query_result_nodes,
-        )
-        mock_write_deltalake.assert_called_once()
-        mock_write_deltalake.assert_called_with(
-            expected_node_instance, lakehouse_prefix
-        )
-
-    def test_send_to_lakehouse_edges(
-        self,
-        query_result_edges,
-        mock_write_deltalake,
-        replicator_config,
-        expected_edge_instance,
-        lakehouse_prefix,
-        test_data_modeling_replicator,
-    ):
-        test_data_modeling_replicator.send_to_lakehouse(
-            data_model_config=replicator_config.data_modeling,
-            state_id="test_state_id",
-            result=query_result_edges,
-        )
-        mock_write_deltalake.assert_called_once()
-        mock_write_deltalake.assert_called_with(
-            expected_edge_instance, lakehouse_prefix
-        )
-
-    @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-    def test_write_instances_to_lakehouse_tables(
-        self,
-        mock_deltalake_write,
-        expected_node_instance,
-        test_data_modeling_replicator,
-    ):
-        pyarrow_data = pa.Table.from_pylist(
-            expected_node_instance["test_space_test_view"]
-        )
-        test_data_modeling_replicator.write_instances_to_lakehouse_tables(
-            expected_node_instance,
-            "test_abfss_prefix",
-        )
-        test_data_modeling_replicator.azure_credential.get_token.assert_called_once()
-        mock_deltalake_write.assert_called_once_with(
-            "test_abfss_prefix/Tables/test_space_test_view",
-            pyarrow_data,
-            engine="rust",
-            mode="append",
-            schema_mode="merge",
-            storage_options={
-                "bearer_token": "test_token",
-                "use_s3_endpoint": "true",
-            },
-        )
-
-    @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-    def test_write_instances_to_lakehouse_tables_delta_error(
-        self,
-        mock_deltalake_write,
-        expected_node_instance,
-        test_data_modeling_replicator,
-    ):
-        # Raise DeltaError from write_deltalake
-        mock_deltalake_write.side_effect = DeltaError()
-        # Call the method under test and assert it raises DeltaError
-        with pytest.raises(DeltaError):
-            test_data_modeling_replicator.write_instances_to_lakehouse_tables(
-                expected_node_instance,
-                "test_abfss_prefix",
-            )
-        # Assert that logger.error was called
-        test_data_modeling_replicator.logger.error.assert_called_once()
+def test_should_retry_exc_behaviour():
+    assert dm._should_retry_exc(RequestException()) is True
+    ce = CogniteAPIError(message="cursor has expired", code=400)
+    assert dm._should_retry_exc(ce) is False

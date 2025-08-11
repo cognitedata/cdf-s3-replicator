@@ -8,7 +8,7 @@ import uuid
 from typing import Any, Dict, Optional, Union
 import pyarrow as pa
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 from cognite.client.data_classes.data_modeling.ids import ViewId, ContainerId
 from cognite.client.data_classes.data_modeling.query import (
     EdgeResultSetExpression,
@@ -34,6 +34,13 @@ from cdf_s3_replicator.extractor_config import CdfExtractorConfig
 from datetime import datetime, timedelta, UTC
 from itertools import chain
 import botocore.config as bc
+
+
+def _should_retry_exc(exc: BaseException) -> bool:
+    if isinstance(exc, CogniteAPIError):
+        return not (exc.code == 400 and "cursor has expired" in str(exc).lower())
+
+    return isinstance(exc, requests.exceptions.RequestException) or isinstance(exc, Exception)
 
 
 class DataModelingReplicator(Extractor):
@@ -71,7 +78,6 @@ class DataModelingReplicator(Extractor):
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         self._s3: boto3.client | None = None
         self._s3_created_at: datetime | None = None
-        self.LARGE_TABLE_THRESHOLD = 1_000_000  # Threshold for large views to optimize memory usage
 
 
     def _make_s3_client(self) -> boto3.client:
@@ -236,17 +242,17 @@ class DataModelingReplicator(Extractor):
 
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
         query = (
-            self._edge_query_for_view(dm_cfg, view) if kind == "edges"
-            else self._node_query_for_view(dm_cfg, view)
+            self._edge_query_for_view(view) if kind == "edges"
+            else self._node_query_for_view(view)
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
 
-    def _node_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
+    def _node_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         container_pred = HasData(
-            containers=[ContainerId(dm_cfg.space, view["externalId"])]
+            containers=[ContainerId(view["space"], view["externalId"])]
         )
         view_pred = HasData(views=[ViewId(view["space"],
                                           view["externalId"],
@@ -262,12 +268,12 @@ class DataModelingReplicator(Extractor):
         return Query(with_=with_, select=select)
 
 
-    def _edge_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
+    def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         if view.get("usedFor") != "edge":
             container_pred = HasData(
-                containers=[ContainerId(dm_cfg.space, view["externalId"])]
+                containers=[ContainerId(view["space"], view["externalId"])]
             )
             view_pred = HasData(views=[vid])
             node_filter = Or(container_pred, view_pred)
@@ -308,16 +314,9 @@ class DataModelingReplicator(Extractor):
             for i in result.data.get(rs, [])
         )
 
+
     @retry(
-        retry=(lambda exc: isinstance(exc, (
-                CogniteAPIError,
-                requests.exceptions.RequestException,
-                Exception
-        )) and not (
-                isinstance(exc, CogniteAPIError) and
-                exc.code == 400 and
-                "cursor has expired" in str(exc).lower()
-        )),
+        retry=retry_if_exception(_should_retry_exc),
         wait=wait_exponential_jitter(initial=1, max=30),
         stop=stop_after_attempt(5),
         reraise=True,
@@ -966,8 +965,8 @@ class DataModelingReplicator(Extractor):
                     if row.get(col) is not None:
                         row[col] = str(row[col])
 
-        all_cols = set(rows[0].keys()) if rows else set()
-        null_cols = all_cols - non_null_cols
+        all_cols: set[str] = set().union(*(r.keys() for r in sanitized_rows)) if sanitized_rows else set()
+        null_cols = {c for c in all_cols if all(r.get(c) is None for r in sanitized_rows)}
         if null_cols:
             for row in sanitized_rows:
                 for col in null_cols:
@@ -1066,10 +1065,10 @@ class DataModelingReplicator(Extractor):
     def _delete_tombstones(self, dt: DeltaTable, tombstones: list[str], chunk: int = 5_000):
 
         for i in range(0, len(tombstones), chunk):
-            escaped = [x.replace("'", "''") for x in tombstones]
+            part = tombstones[i:i + chunk]
+            escaped = [x.replace("'", "''") for x in part]
             escaped_list = ", ".join(f"'{xid}'" for xid in escaped)
             predicate = f"externalId IN ({escaped_list})"
-
             dt.delete(predicate)
 
 
@@ -1108,8 +1107,7 @@ class DataModelingReplicator(Extractor):
             self._validate_tableau_schema(arrow_table.schema, table)
         except Exception as schema_error:
             self.logger.warning(f"Standard schema failed for {table}: {schema_error}. Doing safe types fallback.")
-            safe_rows = self._convert_to_safe_types(rows)
-            arrow_table = pa.Table.from_pylist(safe_rows)
+            arrow_table = self._convert_to_safe_types(rows)
 
         if arrow_table is None:
             raise RuntimeError(f"All schema approaches failed for {table}")

@@ -1,39 +1,41 @@
 type: local
 
 logger:
-    console:
-        level: INFO
+  console:
+    level: INFO
 
-# Cognite project to stream your datapoints from
 cognite:
-    host: ${COGNITE_BASE_URL}
-    project: ${COGNITE_PROJECT}
+  host:    ${COGNITE_BASE_URL}
+  project: ${COGNITE_PROJECT}
 
-    idp-authentication:
-        token-url: ${COGNITE_TOKEN_URL}
-        client-id: ${COGNITE_CLIENT_ID}
-        secret: ${COGNITE_CLIENT_SECRET}
-        scopes:
-            - ${COGNITE_BASE_URL}/.default
-    extraction-pipeline:
-        external-id: ${COGNITE_EXTRACTION_PIPELINE}
+  idp-authentication:
+    token-url:  ${COGNITE_TOKEN_URL}
+    client-id:  ${COGNITE_CLIENT_ID}
+    secret:     ${COGNITE_CLIENT_SECRET}
+    scopes:
+      - ${COGNITE_BASE_URL}/.default
+  extraction-pipeline:
+    external-id: ${COGNITE_EXTRACTION_PIPELINE}
 
-#Extractor config
 extractor:
-    state-store:
-        raw:
-            database: ${COGNITE_STATE_DB}
-            table: integration_test_state
-    subscription-batch-size: 10000
-    ingest-batch-size: 100000
-    poll-time: 5
+  state-store:
+    raw:
+      database: ${COGNITE_STATE_DB}
+      table:    ${COGNITE_STATE_TABLE}
+  subscription-batch-size: 10000
+  ingest-batch-size:       100000
+  poll-time:               900
+  snapshot-interval: 900
 
 
-# sync data model
 data_modeling:
-    - space: IntegrationTestSpace
-      lakehouse_prefix: ${LAKEHOUSE_ABFSS_PREFIX}
-
+  - space: dm-space-example1
+    data_models:
+      - external_id: Movie
+        views: [Actor, Person, Movie]
 
 destination:
-    time_series_prefix: ""
+  s3:
+    bucket:  ${AWS_S3_BUCKET}
+    prefix:  ${S3_PREFIX}
+    region:  ${AWS_REGION}
