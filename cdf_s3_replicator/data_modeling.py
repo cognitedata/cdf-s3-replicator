@@ -242,13 +242,13 @@ class DataModelingReplicator(Extractor):
 
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
         query = (
-            self._edge_query_for_view(dm_cfg, view) if kind == "edges"
-            else self._node_query_for_view(dm_cfg, view)
+            self._edge_query_for_view(view) if kind == "edges"
+            else self._node_query_for_view(view)
         )
         self._iterate_and_write(dm_cfg, state_id, query)
 
 
-    def _node_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
+    def _node_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         container_pred = HasData(
@@ -268,7 +268,7 @@ class DataModelingReplicator(Extractor):
         return Query(with_=with_, select=select)
 
 
-    def _edge_query_for_view(self, dm_cfg: DataModelingConfig, view: dict[str, Any]) -> Query:
+    def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
         props = list(view["properties"])
         if view.get("usedFor") != "edge":
