@@ -1,53 +1,104 @@
 import os
-from azure.identity import DefaultAzureCredential
+import time
+
 from deltalake import DeltaTable
 import pandas as pd
 from pandas import DataFrame
 from pandas.testing import assert_frame_equal
-from urllib.parse import urlparse
 from deltalake.writer import write_deltalake
 from deltalake.exceptions import TableNotFoundError
-from azure.storage.filedatalake import DataLakeServiceClient
 
 TIMESTAMP_COLUMN = "timestamp"
-DATA_MODEL_TIMESTAMP_COLUMNS = ["lastUpdatedTime", "createdTime"]
+DATA_MODEL_TIMESTAMP_COLUMNS = ["lastUpdatedTime", "createdTime", "deletedTime"]
 EVENT_CDF_COLUMNS = ["id", "createdTime", "lastUpdatedTime"]
 EVENT_SORT_COLUMNS = "startTime"
 
 
-def lakehouse_table_name(table_name: str):
-    return os.environ["LAKEHOUSE_ABFSS_PREFIX"] + "/Tables/" + table_name
+def _s3_storage_options() -> dict:
+    opts = {}
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    if region:
+        opts["AWS_REGION"] = region
+
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    session_token = os.getenv("AWS_SESSION_TOKEN")
+
+    if access_key and secret_key:
+        opts["AWS_ACCESS_KEY_ID"] = access_key
+        opts["AWS_SECRET_ACCESS_KEY"] = secret_key
+    if session_token:
+        opts["AWS_SESSION_TOKEN"] = session_token
+
+    return opts
 
 
-def get_ts_delta_table(
-    credential: DefaultAzureCredential, lakehouse_timeseries_path: str
-) -> DeltaTable:
-    token = credential.get_token("https://storage.azure.com/.default")
-    return DeltaTable(
-        lakehouse_timeseries_path,
-        storage_options={"bearer_token": token.token, "use_s3_endpoint": "true"},
-    )
+def s3_table_name(table_name: str) -> str:
+    """
+    Compose a Delta table URI under your S3 prefix.
+
+    If S3_PREFIX is set (non-empty), we use it:
+      s3://bucket/optional/prefix/Tables/<table_name>
+
+    Otherwise, we fall back to AWS_S3_BUCKET:
+      s3://<AWS_S3_BUCKET>/Tables/<table_name>
+    """
+    base = os.getenv("S3_PREFIX", "").strip()
+    if base:
+        return f"{base.rstrip('/')}/Tables/{table_name}"
+
+    bucket = os.getenv("AWS_S3_BUCKET", "").strip()
+    if not bucket:
+        raise RuntimeError("Set S3_PREFIX (recommended) or AWS_S3_BUCKET in the environment.")
+    return f"s3://{bucket}/Tables/{table_name}"
 
 
-def delete_delta_table_data(credential: DefaultAzureCredential, path: str):
+def get_delta_table(_credential, s3_table_path: str) -> DeltaTable:
+    """
+    Return a DeltaTable for a given S3 path, with a short retry so that
+    freshly created tables have time to expose _delta_log.
+    """
+    opts = _s3_storage_options()
+
+    last_err = None
+    for attempt in range(6):
+        try:
+            return DeltaTable(s3_table_path, storage_options=opts)
+        except TableNotFoundError as e:
+            last_err = e
+            if attempt < 5:
+                time.sleep(1)
+            else:
+                raise
+
+
+def delete_delta_table_data(_credential, path: str):
+    """
+    Delete all rows in the table (logical delete). Creates the table handle if it exists.
+    `_credential` is ignored (compat).
+    """
     try:
-        delta_table = get_ts_delta_table(credential, path)
+        delta_table = get_delta_table(_credential, path)
         delta_table.delete()
     except TableNotFoundError:
         print(f"Table not found {path}")
 
 
-def read_deltalake_timeseries(timeseries_path: str, credential: DefaultAzureCredential):
+def read_deltalake_tables(tables_path: str, _credential):
+    """
+    Read a Delta table at `tables_path` into a pandas DataFrame.
+    `_credential` is ignored (compat).
+    """
     try:
-        delta_table = get_ts_delta_table(credential, timeseries_path)
+        delta_table = get_delta_table(_credential, tables_path)
     except TableNotFoundError:
-        print(f"Table not found {timeseries_path}, returning empty dataframe")
+        print(f"Table not found {tables_path}, returning empty dataframe")
         return pd.DataFrame()
     df = delta_table.to_pandas()
     return df
 
 
-def prepare_lakehouse_dataframe_for_comparison(
+def prepare_s3_dataframe_for_comparison(
     dataframe: pd.DataFrame, external_id: str
 ) -> pd.DataFrame:
     dataframe = dataframe.loc[dataframe["externalId"] == external_id]
@@ -55,30 +106,32 @@ def prepare_lakehouse_dataframe_for_comparison(
     return dataframe
 
 
-def write_timeseries_data_to_s3(
-    credential: DefaultAzureCredential, data_frame: DataFrame, table_path: str
+def write_tables_data_to_s3(
+    _credential, data_frame: DataFrame, table_path: str
 ):
+    """
+    Append a pandas DataFrame to a Delta table at `table_path`.
+    `_credential` is ignored (compat).
+    """
     print(table_path)
-    token = credential.get_token("https://storage.azure.com/.default").token
-    table_path = table_path
-
     write_deltalake(
         table_path,
         data_frame,
         mode="append",
-        storage_options={"bearer_token": token, "use_s3_endpoint": "true"},
+        storage_options=_s3_storage_options(),
     )
     return None
 
 
-def remove_time_series_data_from_s3(
-    credential: DefaultAzureCredential, table_path: str
-):
-    token = credential.get_token("https://storage.azure.com/.default").token
+def remove_tables_data_from_s3(_credential, table_path: str):
+    """
+    Delete all data in the Delta table (logical delete).
+    `_credential` is ignored (compat).
+    """
     try:
         DeltaTable(
             table_uri=table_path,
-            storage_options={"bearer_token": token, "use_s3_endpoint": "true"},
+            storage_options=_s3_storage_options(),
         ).delete()
     except Exception:
         pass
@@ -90,132 +143,72 @@ def prepare_test_dataframe_for_comparison(dataframe: pd.DataFrame) -> pd.DataFra
     return dataframe
 
 
-def assert_timeseries_data_in_s3(
+def assert_tables_data_in_s3(
     external_id: str,
     data_points: pd.DataFrame,
-    timeseries_path: str,
-    azure_credential: DefaultAzureCredential,
+    tables_path: str,
+    _credential,
 ):
-    data_points_from_lakehouse = read_deltalake_timeseries(
-        timeseries_path, azure_credential
+    """
+    Assert time series data matches exactly between expected DataFrame and S3 Delta.
+    `_credential` is ignored (compat).
+    """
+    data_points_from_s3 = read_deltalake_tables(
+        tables_path, _credential
     )
-    lakehouse_dataframe = prepare_lakehouse_dataframe_for_comparison(
-        data_points_from_lakehouse, external_id
+    s3_dataframe = prepare_s3_dataframe_for_comparison(
+        data_points_from_s3, external_id
     )
     test_dataframe = prepare_test_dataframe_for_comparison(data_points)
-    assert_frame_equal(test_dataframe, lakehouse_dataframe, check_dtype=False)
+    assert_frame_equal(test_dataframe, s3_dataframe, check_dtype=False)
 
 
 def assert_data_model_instances_in_s3(
-    instance_table_paths: list,
-    instance_dataframes: dict[str, pd.DataFrame],
-    azure_credential: DefaultAzureCredential,
+    path_to_expected: dict[str, pd.DataFrame],
+    _credential,
 ):
-    # Assert the data model is populated in a S3 lakehouse
-    for path in instance_table_paths:
-        delta_table = get_ts_delta_table(azure_credential, path)
-        lakehouse_dataframe = delta_table.to_pandas()
-        lakehouse_dataframe = lakehouse_dataframe.drop(
-            columns=DATA_MODEL_TIMESTAMP_COLUMNS
+    """
+    Assert raw data-model tables (per-view + edges) match expected frames,
+    ignoring created/lastUpdated/deleted timestamps.
+
+    `path_to_expected` must be a mapping: { s3_uri -> expected_dataframe }.
+    """
+    def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+        return (
+            df.drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
+              .sort_index(axis=1)
+              .reset_index(drop=True)
         )
-        table_name = path.split("Tables/")[1]
-        assert_frame_equal(
-            instance_dataframes[table_name], lakehouse_dataframe, check_dtype=False
-        )
+
+    for path, expected_df in path_to_expected.items():
+        delta_table = get_delta_table(_credential, path)
+        s3_dataframe = delta_table.to_pandas()
+
+        expected_norm = _normalize(expected_df.copy())
+        s3_norm = _normalize(s3_dataframe)
+
+        assert_frame_equal(expected_norm, s3_norm, check_dtype=False)
 
 
 def assert_data_model_instances_update(
-    update_dataframe: tuple, azure_credential: DefaultAzureCredential
+    update_dataframe: tuple, _credential
 ):
-    # Assert the data model changes including versions are propagated to a S3 lakehouse
-    path = lakehouse_table_name(update_dataframe[0])
-    delta_table = get_ts_delta_table(azure_credential, path)
-    lakehouse_dataframe = delta_table.to_pandas()
-    lakehouse_dataframe = lakehouse_dataframe.drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS)
-    assert_frame_equal(update_dataframe[1], lakehouse_dataframe, check_dtype=False)
+    """
+    Assert that updated nodes (e.g., version bumps) are reflected in S3 Delta.
+    `_credential` is ignored (compat). `update_dataframe` is (path, expected_df).
+    """
+    path, expected_df = update_dataframe
+    delta_table = get_delta_table(_credential, path)
+    s3_dataframe = delta_table.to_pandas()
 
-
-def assert_events_data_in_s3(
-    events_path: str,
-    events_dataframe: pd.DataFrame,
-    azure_credential: DefaultAzureCredential,
-):
-    # Assert events data is populated in a S3 lakehouse
-    events_from_lakehouse = read_deltalake_timeseries(events_path, azure_credential)
-
-    # Prepare the lakehouse data for comparison
-    events_from_lakehouse = (
-        events_from_lakehouse.drop(columns=EVENT_CDF_COLUMNS)
-        .sort_values(by=EVENT_SORT_COLUMNS)
-        .reset_index(drop=True)
-    )
-
-    # Prepare the input DataFrame for comparison
-    events_dataframe = events_dataframe.sort_values(by=EVENT_SORT_COLUMNS).reset_index(
-        drop=True
-    )
-
-    # Assert that the two DataFrames are equal
-    assert_frame_equal(events_dataframe, events_from_lakehouse, check_dtype=False)
-
-
-def parse_abfss_url(url: str) -> tuple[str, str, str]:
-    parsed_url = urlparse(url)
-
-    if "@" not in parsed_url.netloc or "." not in parsed_url.netloc:
-        raise ValueError(
-            "URL is not in the expected format.  Expected format is abfss://<workspace>@onelake.dfs.s3.microsoft.com/<lakehouse>"
+    def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+        return (
+            df.drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
+              .sort_index(axis=1)
+              .reset_index(drop=True)
         )
 
-    container_id = parsed_url.netloc.split("@")[0]
-    account_name = parsed_url.netloc.split("@")[1].split(".")[0]
-    file_path = parsed_url.path
+    expected_norm = _normalize(expected_df.copy())
+    s3_norm = _normalize(s3_dataframe)
 
-    return container_id, account_name, file_path
-
-
-def get_lakehouse_file_client(
-    abfss_prefix: str,
-    table_name: str,
-    file_name: str,
-    credential: DefaultAzureCredential,
-):
-    workspace_name, account_name, lakehouse_file_path = parse_abfss_url(abfss_prefix)
-    lakehouse_file_path = lakehouse_file_path + "/" + table_name + "/"
-
-    service_client = DataLakeServiceClient(
-        f"https://{account_name}.dfs.s3.microsoft.com", credential=credential
-    )
-    file_system_client = service_client.get_file_system_client(workspace_name)
-    directory_client = file_system_client.get_directory_client(lakehouse_file_path)
-    file_client = directory_client.get_file_client(file_name)
-    return file_client
-
-
-def upload_file_to_lakehouse(
-    file_name: str,
-    local_file_path: str,
-    abfss_prefix: str,
-    table_name: str,
-    credential: DefaultAzureCredential,
-):
-    file_client = get_lakehouse_file_client(
-        abfss_prefix, table_name, file_name, credential
-    )
-    with open(file=local_file_path, mode="rb") as data:
-        file_client.upload_data(data, overwrite=True)
-
-
-def remove_file_from_lakehouse(
-    file_name: str,
-    abfss_prefix: str,
-    table_name: str,
-    credential: DefaultAzureCredential,
-):
-    file_client = get_lakehouse_file_client(
-        abfss_prefix, table_name, file_name, credential
-    )
-    try:
-        file_client.delete_file()
-    except Exception as e:
-        print(f"Error deleting file: {e}")
+    assert_frame_equal(expected_norm, s3_norm, check_dtype=False)

@@ -29,19 +29,16 @@ class _ViewKey:
 def replicator():
     r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
     r.logger = Mock()
-    # Minimal config.s3 needed by _delta_append / prefixes
     r.s3_cfg = SimpleNamespace(bucket="test-bucket", prefix="pre", region="us-east-1")
     r.config = SimpleNamespace(destination=SimpleNamespace(s3=r.s3_cfg))
     r.state_store = Mock()
     r.cognite_client = Mock()
-    # Simulate valid S3 client
     r._s3 = Mock()
     r._s3_created_at = datetime.now(UTC)
     return r
 
 
 def mk_node(space="sp", xid="n1", ver=1, last=111, created=100, deleted=None, view_xid="viewA"):
-    # Minimal structure consumed by _extract_instances
     props_data = {_ViewKey(view_xid): {"p1": "v1", "p2": 2}}
     properties = SimpleNamespace(data=props_data)
     return SimpleNamespace(
@@ -85,16 +82,13 @@ def test_node_query_for_view_builds_expected(replicator):
     view = {"space": "vsp", "externalId": "vxid", "version": 7, "properties": {"a": 1, "b": 2}}
     q = replicator._node_query_for_view(dm_cfg, view)
 
-    # basic shape checks
     assert "nodes" in q.with_
     assert q.with_["nodes"].limit == 2000
     assert "nodes" in q.select
 
-    # Inspect using the serialized form
     qd = q.dump()
     assert "nodes" in qd["select"]
 
-    # >>> the important bit: use "sources", not "columns"
     srcs = qd["select"]["nodes"]["sources"]
     assert len(srcs) == 1
     src = srcs[0]["source"]
@@ -105,16 +99,13 @@ def test_node_query_for_view_builds_expected(replicator):
 
 
 def test_node_query_uses_view_space_for_containerid(monkeypatch, replicator):
-    # capture what ContainerId(...) is called with
     seen = {}
 
     def fake_container_id(space, externalId):
         seen["space"] = space
         seen["externalId"] = externalId
-        # Return a tuple so HasData(ContainerId.load(...)) accepts it
         return (space, externalId)
 
-    # Monkeypatch the symbol used in your module
     monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
 
     dm_cfg = SimpleNamespace(space="cfg_space")
@@ -122,7 +113,6 @@ def test_node_query_uses_view_space_for_containerid(monkeypatch, replicator):
 
     replicator._node_query_for_view(dm_cfg, view)
 
-    # Assert the code used the view's space, not dm_cfg.space
     assert seen["space"] == "view_space"
     assert seen["externalId"] == "vx"
 
@@ -138,7 +128,7 @@ def test_edge_query_for_view_uses_view_space_for_containerid_when_anchor(monkeyp
     monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
 
     dm_cfg = SimpleNamespace(space="cfg_space")
-    view = {"space": "view_space", "externalId": "vx", "version": 3, "properties": {"p": 1}}  # not usedFor="edge"
+    view = {"space": "view_space", "externalId": "vx", "version": 3, "properties": {"p": 1}}
 
     replicator._edge_query_for_view(dm_cfg, view)
 
@@ -150,7 +140,6 @@ def test_edge_query_for_view_node_anchor_builds_expected(replicator):
     dm_cfg = SimpleNamespace(space="sp")
     view = {"space": "vsp", "externalId": "vx", "version": 3, "properties": {"p": 1}}
     q = replicator._edge_query_for_view(dm_cfg, view)
-    # When usedFor != "edge", we expect nodes + edges_out + edges_in
     assert set(q.with_.keys()) == {"nodes", "edges_out", "edges_in"}
     assert "edges_out" in q.select and "edges_in" in q.select
 
@@ -167,11 +156,10 @@ def test_get_data_model_views_explicit_version_not_found_logs_and_empty(monkeypa
     dm_cfg = SimpleNamespace(space="sp")
     model = SimpleNamespace(external_id="m", version=3, views=None)
 
-    # Use a real logger so caplog can capture messages
     replicator.logger = logging.getLogger(replicator.name)
 
     cc = replicator.cognite_client
-    cc.data_modeling.data_models.retrieve.return_value = []  # not found
+    cc.data_modeling.data_models.retrieve.return_value = []
 
     with caplog.at_level(logging.WARNING, logger=replicator.name):
         ver, views = replicator._get_data_model_views(dm_cfg, model)
@@ -185,7 +173,6 @@ def test_get_data_model_views_latest_version_and_subset_with_missing(monkeypatch
     dm_cfg = SimpleNamespace(space="sp")
     model = SimpleNamespace(external_id="m", version=None, views=["vA","vMissing"])
 
-    # Real logger for caplog
     replicator.logger = logging.getLogger(replicator.name)
 
     cc = replicator.cognite_client
@@ -208,14 +195,13 @@ def test_get_data_model_views_latest_version_and_subset_with_missing(monkeypatch
 
     assert ver == "9"
     assert views == [retrieved_view]
-    assert "not found" in caplog.text.lower()  # warning about vMissing
+    assert "not found" in caplog.text.lower()
 
 
 def test_get_data_model_views_explicit_version_no_views(monkeypatch, replicator, caplog):
     dm_cfg = SimpleNamespace(space="sp")
     model = SimpleNamespace(external_id="m", version=2, views=None)
 
-    # Real logger for caplog
     replicator.logger = logging.getLogger(replicator.name)
 
     cc = replicator.cognite_client
@@ -250,13 +236,10 @@ def test_extract_instances_nodes_and_edges_dirs(replicator):
     )
     out = DataModelingReplicator._extract_instances(res)
 
-    # Node rows grouped by <view>/nodes
     assert "A/nodes" in out and len(out["A/nodes"]) == 2
 
-    # Edge-only view rows go to "_edges"
     assert "_edges" in out and len(out["_edges"]) == 2
 
-    # Directional edges grouped by <edge TYPE externalId>/edges and include direction
     assert "edgeType/edges" in out and len(out["edgeType/edges"]) == 4
     dirs = {row.get("direction") for row in out["edgeType/edges"]}
     assert dirs == {"in", "out"}
@@ -271,10 +254,10 @@ def test_sanitize_rows_for_tableau_mixed_types_and_structs(replicator):
         {
             "space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
             "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
-            "a": {"k": "v"},        # dict -> json
-            "b": [1, 2, 3],         # list -> json
-            "c": b"bytes",          # bytes -> decoded
-            "d": 1,                 # int
+            "a": {"k": "v"},
+            "b": [1, 2, 3],
+            "c": b"bytes",
+            "d": 1,
         },
         {
             "space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
@@ -282,16 +265,13 @@ def test_sanitize_rows_for_tableau_mixed_types_and_structs(replicator):
             "a": None,
             "b": None,
             "c": "text",
-            "d": "string-here",     # mixed type with prior int -> coerced to str
+            "d": "string-here",
         },
     ]
     out = replicator._sanitize_rows_for_tableau(rows)
-    # dict/list became JSON strings or None
     assert isinstance(out[0]["a"], (str, type(None)))
     assert isinstance(out[0]["b"], (str, type(None)))
-    # bytes decoded
     assert out[0]["c"] == "bytes"
-    # mixed column 'd' coerced to str
     assert isinstance(out[0]["d"], str) and isinstance(out[1]["d"], str)
 
 
@@ -314,17 +294,14 @@ def test_delta_append_schema_fallback_to_safe_types(mock_write, _mock_validate, 
     rows = [{
         "space": "sp", "instanceType": "node", "externalId": "n1",
         "version": 1, "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
-        # bytes will be sanitized, but we don't rely on that anymore
         "badcol": b"binarydata"
     }]
 
-    # Use a real logger so caplog can capture warnings (your fixture mocks logger by default)
     replicator.logger = logging.getLogger(replicator.name)
 
     with caplog.at_level(logging.WARNING, logger=replicator.name):
         replicator._delta_append("tbl", rows, "sp")
 
-    # Your code logs: "Standard schema failed for {table}: {error}. Doing safe types fallback."
     assert "doing safe types fallback" in caplog.text.lower()
     assert mock_write.called
 
@@ -334,11 +311,11 @@ def test_convert_to_safe_types_core_int_fields_bad_values_become_none(replicator
         "space": "sp",
         "instanceType": "node",
         "externalId": "x",
-        "version": "v1",            # bad → None
-        "lastUpdatedTime": "nope",  # bad → None
-        "createdTime": 123,         # ok
-        "deletedTime": None,        # ok
-        "someProp": {"a": 1},       # becomes str
+        "version": "v1",
+        "lastUpdatedTime": "nope",
+        "createdTime": 123,
+        "deletedTime": None,
+        "someProp": {"a": 1},
     }]
     tbl = replicator._convert_to_safe_types(rows)
     cols = {f.name: f.type for f in tbl.schema}
@@ -365,11 +342,9 @@ def test_delta_append_writes_and_tombstones(mock_dt_cls, mock_write, replicator)
 
     replicator._delta_append("A/nodes", rows, "sp")
 
-    # write_deltalake called with S3 URI path
     assert mock_write.call_count == 1
     args, kwargs = mock_write.call_args
     assert args[0].startswith("s3://test-bucket/pre/raw/sp/modelA/2/views/A/nodes")
-    # tombstone path calls delete()
     assert dt.delete.call_count == 1
     predicate = dt.delete.call_args[0][0]
     assert "del_me" in predicate
@@ -379,7 +354,6 @@ def test_delta_append_writes_and_tombstones(mock_dt_cls, mock_write, replicator)
 def test_delta_append_without_prefix_has_clean_uri(mock_write, replicator):
     replicator._model_xid = "m"
     replicator._model_version = "1"
-    # Remove prefix
     replicator.s3_cfg.prefix = None
 
     rows = [{"space": "sp","instanceType":"node","externalId":"n1","version":1,"lastUpdatedTime":1,"createdTime":1,"deletedTime":None}]
@@ -387,7 +361,7 @@ def test_delta_append_without_prefix_has_clean_uri(mock_write, replicator):
 
     uri = mock_write.call_args[0][0]
     assert uri == "s3://test-bucket/raw/sp/m/1/views/A/nodes"
-    assert "//raw/" not in uri  # no double slash
+    assert "//raw/" not in uri
 
 
 def test_delete_tombstones_chunks(replicator):
@@ -395,21 +369,16 @@ def test_delete_tombstones_chunks(replicator):
     tombstones = [f"id{i}" for i in range(12)]
     replicator._delete_tombstones(dt, tombstones, chunk=5)
 
-    # Expect ceil(12/5) == 3 calls
     assert dt.delete.call_count == 3
 
     preds = [c.args[0] for c in dt.delete.call_args_list]
-    # No single predicate should include all ids
     assert not any(all(f"id{i}" in p for i in range(12)) for p in preds)
-    # Each predicate should include only a subset
     assert any("id0" in preds[0] and "id5" not in preds[0] for _ in [0])
 
 
 @patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
 def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
-    # Prepare state
     replicator.state_store.get_state.return_value = (None, '{"a": "b"}')
-    # First sync raises 400 "cursor has expired" => reset cursors & retry
     err = CogniteAPIError(message="cursor has expired", code=400)
     fake_node = SimpleNamespace(last_updated_time=1234567890)
     second = SimpleNamespace(
@@ -429,7 +398,6 @@ def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
 
     replicator._iterate_and_write(dm_cfg, "state_id", q)
 
-    # State cleared then data sent
     replicator.state_store.set_state.assert_any_call(external_id="state_id", high=None)
     assert mock_send.call_count >= 1
 
@@ -441,7 +409,6 @@ def test_iterate_and_write_cursor_expired_mid_pagination(mock_send, replicator):
     page1 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors={"c": 1})
     err = CogniteAPIError(message="cursor has expired", code=400)
 
-    # First page ok -> second page raises 400 cursor expired
     replicator._safe_sync = Mock(side_effect=[page1, err])
 
     q = SimpleNamespace(cursors=None)
@@ -449,7 +416,6 @@ def test_iterate_and_write_cursor_expired_mid_pagination(mock_send, replicator):
 
     replicator._iterate_and_write(dm_cfg, "sid", q)
 
-    # We wrote page1 and then cleared state on expiry
     assert mock_send.call_count == 1
     replicator.state_store.set_state.assert_any_call(external_id="sid", high=None)
 
@@ -458,7 +424,7 @@ def test_iterate_and_write_cursor_expired_mid_pagination(mock_send, replicator):
 def test_iterate_and_write_pagination_updates_state(mock_send, replicator):
     replicator.state_store.get_state.return_value = (None, None)
 
-    fake_node = SimpleNamespace(last_updated_time=0)  # any int is fine
+    fake_node = SimpleNamespace(last_updated_time=0)
 
     page1 = SimpleNamespace(data={"nodes": [fake_node]}, cursors={"c": 1})
     page2 = SimpleNamespace(data={"nodes": []}, cursors=None)
@@ -475,15 +441,12 @@ def test_iterate_and_write_pagination_updates_state(mock_send, replicator):
 
 @patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
 def test_iterate_and_write_short_circuits_on_future_change(mock_send, replicator, monkeypatch):
-    # Make time.time deterministic
     monkeypatch.setattr("time.time", lambda: 1000.0)  # query_start_ms = 1_000_000
 
-    # First page has a node with last_updated_time >= query_start_ms → should short-circuit
     page1 = SimpleNamespace(
         data={"nodes": [SimpleNamespace(last_updated_time=1_000_000)]},
         cursors={"c": 1},
     )
-    # If short-circuit works, this second page should never be requested
     page2 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors=None)
 
     replicator.state_store.get_state.return_value = (None, None)
@@ -494,13 +457,11 @@ def test_iterate_and_write_short_circuits_on_future_change(mock_send, replicator
 
     replicator._iterate_and_write(dm_cfg, "sid", q)
 
-    # wrote first page only; second _safe_sync never called
     assert mock_send.call_count == 1
     assert replicator._safe_sync.call_count == 1
 
 
 def test_get_s3_prefix_requires_version(replicator):
-    # If no _model_version is set, it should raise
     replicator._model_xid = "m"
     replicator._model_version = None
     with pytest.raises(RuntimeError):
@@ -509,22 +470,16 @@ def test_get_s3_prefix_requires_version(replicator):
 
 @patch.object(DataModelingReplicator, "_list_prefixes")
 def test_edge_folders_for_anchor_filters_correctly(mock_list, replicator):
-    # Setup version so _raw_prefix works
     replicator._model_xid = "m"
     replicator._model_version = "1"
-    # Pretend S3 has these "folders"
-    # (the method receives prefixes under raw/.../views/)
     mock_list.return_value = [
-        "pre/raw/sp/m/1/views/A/edges/",          # match
-        "pre/raw/sp/m/1/views/A.something/edges/",# match (starts with A.)
-        "pre/raw/sp/m/1/views/B/edges/",          # not match
+        "pre/raw/sp/m/1/views/A/edges/",
+        "pre/raw/sp/m/1/views/A.something/edges/",
+        "pre/raw/sp/m/1/views/B/edges/",
     ]
     out = replicator._edge_folders_for_anchor("sp", "A")
-    # anchor base also added explicitly
     assert any(x.endswith("/views/A/edges") for x in out)
-    # matching A.* included
     assert any("/views/A.something/edges" in x for x in out)
-    # B excluded
     assert all("/views/B/edges" not in x for x in out)
 
 
@@ -539,13 +494,11 @@ def test_ensure_s3_recreates_client_after_50_minutes(monkeypatch, replicator):
 
     monkeypatch.setattr(DataModelingReplicator, "_make_s3_client", lambda self: fake_make())
 
-    # Initial create
     replicator._s3 = None
     replicator._s3_created_at = None
     replicator._ensure_s3()
     assert replicator._s3 is first
 
-    # Age past 50 minutes → recreate
     replicator._s3_created_at = datetime(2020, 1, 1, tzinfo=UTC)  # very old
     replicator._ensure_s3()
     assert replicator._s3 is second
@@ -555,13 +508,13 @@ def test_ensure_s3_recreates_client_after_50_minutes(monkeypatch, replicator):
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
 @patch.object(DataModelingReplicator, "_atomic_replace_files")
 @patch.object(DataModelingReplicator, "_edge_folders_for_anchor", return_value=[])  # <— add this
-def test_write_view_snapshot_smoke(mock_edges_for_anchor, mock_atomic, mock_delta, mock_write, replicator, tmp_path):
+def test_write_view_snapshot_smoke(mock_atomic, mock_delta, mock_write, replicator, tmp_path):
     replicator._model_xid = "m"
     replicator._model_version = "1"
 
     tbl = Mock()
     tbl.to_pyarrow_table.return_value = pa.Table.from_pylist([])
-    tbl.files.return_value = []  # no node files => write empty nodes
+    tbl.files.return_value = []
     mock_delta.return_value = tbl
 
     replicator._write_view_snapshot("sp", "A", is_edge_only=False)
@@ -583,8 +536,7 @@ def test_write_view_snapshot_edge_only(mock_atomic, mock_delta, mock_write, repl
 
     replicator._write_view_snapshot("sp", "A", is_edge_only=True)
 
-    # Ensure we didn't write a nodes file
-    written_paths = [args[1] for args, _ in mock_write.call_args_list]  # write_table(table, where, ...)
+    written_paths = [args[1] for args, _ in mock_write.call_args_list]
     assert all("nodes" not in p for p in written_paths)
 
 
@@ -596,14 +548,13 @@ def test_atomic_replace_files_cleans_temps_on_failure(replicator, monkeypatch):
     s3 = Mock()
     replicator._s3 = s3
 
-    def boom(*a, **k):
+    def fail_intentionally(*a, **k):
         raise RuntimeError("copy failed")
-    monkeypatch.setattr(DataModelingReplicator, "_copy_and_verify", lambda *a, **k: boom())
+    monkeypatch.setattr(DataModelingReplicator, "_copy_and_verify", lambda *a, **k: fail_intentionally())
 
     with pytest.raises(RuntimeError, match="copy failed"):
         replicator._atomic_replace_files(updates)
 
-    # Verify we attempted to clean up *both* temps (order doesn’t matter)
     keys = {c.kwargs["Key"] for c in s3.delete_object.call_args_list}
     assert keys == {"tmp1.parquet", "tmp2.parquet"}
     assert s3.delete_object.call_count == 2
@@ -617,17 +568,16 @@ def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicato
         ("lastUpdatedTime", pa.int64()),
     ])
 
-    # Put the NEWER 'a' (20) in the FIRST batch, so it's the one emitted
     b1 = pa.record_batch(
         [pa.array(["s","s"]),
          pa.array(["a","b"]),
-         pa.array([20, 5])],  # a=20 (newest), b=5
+         pa.array([20, 5])],
         schema=schema
     )
     b2 = pa.record_batch(
         [pa.array(["s","s"]),
          pa.array(["a","c"]),
-         pa.array([10, 7])],  # a=10 (older), c=7
+         pa.array([10, 7])],
         schema=schema
     )
 

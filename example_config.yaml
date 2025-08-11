@@ -1,68 +1,46 @@
 logger:
-    console:
-        level: INFO
+  console:
+    level: INFO
 
-# Cognite project to stream your datapoints from
 cognite:
-    host: ${COGNITE_BASE_URL}
-    project: ${COGNITE_PROJECT}
+  host:    ${COGNITE_BASE_URL}
+  project: ${COGNITE_PROJECT}
 
-    idp-authentication:
-        token-url: ${COGNITE_TOKEN_URL}
-        client-id: ${COGNITE_CLIENT_ID}
-        secret: ${COGNITE_CLIENT_SECRET}
-        scopes:
-            - ${COGNITE_BASE_URL}/.default
-    extraction-pipeline:
-        external-id: ${COGNITE_EXTRACTION_PIPELINE}
+  idp-authentication:
+    token-url:  ${COGNITE_TOKEN_URL}
+    client-id:  ${COGNITE_CLIENT_ID}
+    secret:     ${COGNITE_CLIENT_SECRET}
+    scopes:
+      - ${COGNITE_BASE_URL}/.default
+  extraction-pipeline:
+    external-id: ${COGNITE_EXTRACTION_PIPELINE}
 
-#Extractor config
 extractor:
-    state-store:
-        raw:
-            database: ${COGNITE_STATE_DB}
-            table: ${COGNITE_STATE_TABLE}
-    subscription-batch-size: 10000
-    ingest-batch-size: 100000
-    poll-time: 5
+  state-store:
+    raw:
+      database: ${COGNITE_STATE_DB}
+      table:    ${COGNITE_STATE_TABLE}
+  subscription-batch-size: 10000
+  ingest-batch-size:       100000
+  poll-time:               900
+  snapshot-interval: 900
 
-# subscriptions to stream
-subscriptions:
-    - external_id: charts-persisted
-      partitions:
-          - 0
-      lakehouse_abfss_path_dps: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/CalculatedTimeseries
-      lakehouse_abfss_path_ts: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/CalculatedTimeseriesMetadata
 
-# sync data model
 data_modeling:
-    - space: cc_plant
-      lakehouse_prefix: ${LAKEHOUSE_ABFSS_PREFIX}
+  - space: dm-space-example1
+    data_models:
+      - external_id: dm-external-id1
+        views: [view-external-id1, view-external-id2]
+      - external_id: dm-external-id2
+        views: [view-external-id1]
 
-source:
-    abfss_prefix: ${LAKEHOUSE_ABFSS_PREFIX}
-    event_path: ${EXTRACTOR_EVENT_PATH}
-    event_path_incremental_field: ${EXTRACTOR_EVENT_INCREMENTAL_FIELD}
-    file_path: ${EXTRACTOR_FILE_PATH}
-    raw_time_series_path: ${EXTRACTOR_RAW_TS_PATH}
-    read_batch_size: 1000
-    data_set_id: ${EXTRACTOR_DATASET_ID}
-    raw_tables:
-        - raw_path: ${EXTRACTOR_RAW_TABLE_PATH}
-          table_name: ${EXTRACTOR_RAW_TABLE_NAME}
-          db_name: ${EXTRACTOR_RAW_DB_NAME}
-          incremental_field: ${EXTRACTOR_RAW_INCREMENTAL_FIELD}
+  - space: dm-space-example2
+    data_models:
+      - external_id: dm-external-id1
+        views: [view-external-id1]
 
 destination:
-    time_series_prefix: ${EXTRACTOR_TS_PREFIX}
-
-# sync events
-event:
-    lakehouse_abfss_path_events: ${LAKEHOUSE_ABFSS_PREFIX}/Tables/${EVENT_TABLE_NAME}
-    batch_size: 5
-
-# sync raw tables from CDF to S3
-raw_tables:
-    - table_name: ${EXTRACTOR_RAW_SOURCE_TABLE_NAME}
-      db_name: ${EXTRACTOR_RAW_SOURCE_DB_NAME}
-      lakehouse_abfss_path_raw: ${LAKEHOUSE_ABFSS_PREFIX}/${EXTRACTOR_RAW_TABLE_DESTINATION_PATH}
+  s3:
+    bucket:  ${AWS_S3_BUCKET}
+    prefix:  ${S3_PREFIX}
+    region:  ${AWS_REGION}
