@@ -129,3 +129,4 @@ class CdfExtractorConfig(Extractor[Config]):
                 f"Failed to retrieve pipeline config: {e}"
             )
             raise
+        
