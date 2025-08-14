@@ -78,6 +78,8 @@ class DataModelingReplicator(Extractor):
         os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         self._s3: boto3.client | None = None
         self._s3_created_at: datetime | None = None
+        self._expected_node_props: set[str] | None = None
+        self._view_props_by_xid: dict[tuple[str, str], set[str]] = {}
 
 
     def _make_s3_client(self) -> boto3.client:
@@ -222,7 +224,7 @@ class DataModelingReplicator(Extractor):
                         self._model_version = None
 
 
-    def replicate_view(self, dm_cfg: DataModelingConfig, dm_external_id: str, dm_version: str,  view: dict[str, Any]) -> None:
+    def replicate_view(self, dm_cfg: DataModelingConfig, dm_external_id: str, dm_version: str, view: dict[str, Any]) -> None:
         """Two separate syncs to keep each query small."""
         if view.get("usedFor") != "edge":
             self._process_instances(
@@ -241,6 +243,12 @@ class DataModelingReplicator(Extractor):
 
 
     def _process_instances(self, dm_cfg, state_id, view, kind="nodes"):
+        if kind == "nodes":
+            self._expected_node_props = set(view["properties"])
+            self._view_props_by_xid[(dm_cfg.space, view["externalId"])] = set(view["properties"])
+        else:
+            self._expected_node_props = None
+
         query = (
             self._edge_query_for_view(view) if kind == "edges"
             else self._node_query_for_view(view)
@@ -417,6 +425,7 @@ class DataModelingReplicator(Extractor):
             self.state_store.synchronize()
         else:
             self.logger.warning(f"Not updating state for {state_id} - no valid cursors")
+
 
     def _get_data_model_views(self, dm_cfg: DataModelingConfig, model) -> tuple[str | None, list]:
         """
@@ -617,6 +626,7 @@ class DataModelingReplicator(Extractor):
 
         return edge_view_folders
 
+
     def _dedup_latest_nodes(self, delta_path: str) -> pa.Table:
         """
         Return a table that keeps only the newest instance of each (space, externalId)
@@ -660,6 +670,29 @@ class DataModelingReplicator(Extractor):
 
         return pa.Table.from_batches(kept_batches)
 
+
+    def _widen_with_props(self, tbl: pa.Table, props: set[str]) -> pa.Table:
+        """
+        Ensure all props exist as string-typed columns (NULLs) in tbl.
+        Does NOT change existing columns/types—only adds missing ones.
+        """
+        if not props or tbl is None:
+            return tbl
+        existing = {f.name for f in tbl.schema}
+        to_add = [p for p in props if p not in existing]
+        if not to_add:
+            return tbl
+
+        base_fields = [pa.field(f.name, f.type) for f in tbl.schema]
+        base_arrays = [tbl.column(i) for i in range(tbl.num_columns)]
+        n = tbl.num_rows
+        extra_fields = [pa.field(c, pa.string()) for c in to_add]
+        extra_arrays = [pa.array([None] * n, type=pa.string()) for _ in to_add]
+
+        return pa.Table.from_arrays(base_arrays + extra_arrays,
+                                    schema=pa.schema(base_fields + extra_fields))
+
+
     def _write_view_snapshot(self, dm_space: str, view_xid: str, is_edge_only: bool) -> None:
         """
         Tableau-optimized stable filenames with atomic replacement.
@@ -699,18 +732,21 @@ class DataModelingReplicator(Extractor):
             if not is_edge_only:
 
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
+                expected = self._view_props_by_xid.get((dm_space, view_xid), set())
                 try:
                     if DeltaTable(node_raw).files():
                         node_tbl = (self._dedup_latest_nodes(node_raw))
                     else:
                         node_tbl = self._create_empty_nodes_table()
 
+                    node_tbl = self._widen_with_props(node_tbl, expected)
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
                     pq.write_table(node_tbl, temp_node_path, compression="snappy")
                     files_to_update.append((temp_node_path, final_node_path, "nodes"))
                 except (FileNotFoundError, DeltaError):
                     empty_node_tbl = self._create_empty_nodes_table()
+                    empty_node_tbl = self._widen_with_props(empty_node_tbl, expected)
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
                     pq.write_table(empty_node_tbl, temp_node_path, compression="snappy")
@@ -724,6 +760,7 @@ class DataModelingReplicator(Extractor):
             self.logger.error("Snapshot creation failed for %s: %s", view_xid, e)
             self._cleanup_temp_files(pub_dir, temp_suffix)
             raise
+
 
     def _copy_and_verify(
             self,
@@ -853,8 +890,7 @@ class DataModelingReplicator(Extractor):
             self._delta_append(tbl_name, rows, data_model_config.space)
 
 
-    @staticmethod
-    def _extract_instances(res: QueryResult) -> dict[str, list[dict]]:
+    def _extract_instances(self, res: QueryResult) -> dict[str, list[dict]]:
         """
         •  Edge-only views  → table "_edges"
         •  Node views       → tables "<view>/nodes" and "<view>/edges"
@@ -891,19 +927,22 @@ class DataModelingReplicator(Extractor):
         for n in res.data.get("nodes", []):
             for view_id, props in n.properties.data.items():
                 tbl_name = f"{view_id.external_id}/nodes"
+                row = {
+                    "space": n.space,
+                    "instanceType": "node",
+                    "externalId": n.external_id,
+                    "version": n.version,
+                    "lastUpdatedTime": n.last_updated_time,
+                    "createdTime": n.created_time,
+                    "deletedTime": n.deleted_time,
+                    **props
+                }
 
-                out.setdefault(tbl_name, []).append(
-                    {
-                        "space": n.space,
-                        "instanceType": "node",
-                        "externalId": n.external_id,
-                        "version": n.version,
-                        "lastUpdatedTime": n.last_updated_time,
-                        "createdTime": n.created_time,
-                        "deletedTime": n.deleted_time,
-                        **props,
-                    }
-                )
+                if self._expected_node_props:
+                    for p in self._expected_node_props:
+                        row.setdefault(p, None)
+
+                out.setdefault(tbl_name, []).append(row)
 
         return out
 
@@ -965,14 +1004,8 @@ class DataModelingReplicator(Extractor):
                     if row.get(col) is not None:
                         row[col] = str(row[col])
 
-        all_cols: set[str] = set().union(*(r.keys() for r in sanitized_rows)) if sanitized_rows else set()
-        null_cols = {c for c in all_cols if all(r.get(c) is None for r in sanitized_rows)}
-        if null_cols:
-            for row in sanitized_rows:
-                for col in null_cols:
-                    row.pop(col, None)
-
         return sanitized_rows
+
 
     def _validate_tableau_schema(self, schema: pa.Schema, table_name: str) -> None:
         """Check for known problematic types that Tableau can't handle."""
@@ -1072,6 +1105,73 @@ class DataModelingReplicator(Extractor):
             dt.delete(predicate)
 
 
+    def _coerce_nulltype_fields_to_string(self, tbl: pa.Table) -> pa.Table:
+        """Turn any pa.null() columns into string-typed null columns, leave everything else as-is."""
+        if tbl is None or tbl.num_columns == 0:
+            return tbl
+        if not any(pa.types.is_null(f.type) for f in tbl.schema):
+            return tbl
+
+        arrays, fields = [], []
+        n = tbl.num_rows
+        for f in tbl.schema:
+            col = tbl.column(f.name)
+            if pa.types.is_null(f.type):
+                fields.append(pa.field(f.name, pa.string()))
+                arrays.append(pa.array([None] * n, type=pa.string()))
+            else:
+                fields.append(pa.field(f.name, f.type))
+                arrays.append(col)
+        return pa.Table.from_arrays(arrays, schema=pa.schema(fields))
+
+
+    def _align_to_existing_schema(self, s3_uri: str, tbl: pa.Table) -> pa.Table:
+        try:
+            dt = DeltaTable(s3_uri)
+        except Exception:
+            return tbl
+
+        try:
+            existing = dt.schema().to_pyarrow()
+        except Exception:
+            existing = dt.to_pyarrow_table().schema
+
+        existing_map = {f.name: f.type for f in existing}
+        incoming_names = {f.name for f in tbl.schema}
+
+        arrays, fields = [], []
+
+        for f in tbl.schema:
+            name, src_type = f.name, f.type
+            col = tbl.column(name)
+            if name in existing_map and existing_map[name] != src_type:
+                target = existing_map[name]
+                try:
+                    col = pc.cast(col, target, safe=False)
+                except Exception:
+                    col = pc.cast(col, pa.string(), safe=False)
+                    target = pa.string()
+                fields.append(pa.field(name, target))
+                arrays.append(col)
+            else:
+                fields.append(pa.field(name, src_type))
+                arrays.append(col)
+
+        missing = [n for n in existing_map if n not in incoming_names]
+        if missing:
+            n_rows = tbl.num_rows
+            for name in missing:
+                t = existing_map[name]
+                try:
+                    arrays.append(pa.array([None] * n_rows, type=t))
+                    fields.append(pa.field(name, t))
+                except Exception:
+                    arrays.append(pa.array([None] * n_rows, type=pa.string()))
+                    fields.append(pa.field(name, pa.string()))
+
+        return pa.Table.from_arrays(arrays, schema=pa.schema(fields))
+
+
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
         Safely append rows to S3-based Delta table with data validation and cleanup.
@@ -1104,6 +1204,8 @@ class DataModelingReplicator(Extractor):
 
         try:
             arrow_table = pa.Table.from_pylist(rows)
+            arrow_table = self._coerce_nulltype_fields_to_string(arrow_table)
+            arrow_table = self._align_to_existing_schema(s3_uri, arrow_table)
             self._validate_tableau_schema(arrow_table.schema, table)
         except Exception as schema_error:
             self.logger.warning(f"Standard schema failed for {table}: {schema_error}. Doing safe types fallback.")
