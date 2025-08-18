@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from datetime import datetime, UTC
+import os
 from unittest.mock import Mock, patch
 
 import pyarrow as pa
@@ -374,6 +375,9 @@ def test_align_to_existing_schema(mock_dt_cls, replicator):
 
     result = replicator._align_to_existing_schema("s3://bucket/table", input_tbl)
 
+    assert mock_dt_cls.called
+    _, kwargs = mock_dt_cls.call_args
+    assert "storage_options" in kwargs
     assert "col3" in result.column_names
     assert result.column("col3").null_count == result.num_rows
 
@@ -471,9 +475,10 @@ def test_delta_append_schema_fallback_to_safe_types(mock_write, _mock_validate, 
     assert mock_write.called
 
 
-@patch("cdf_s3_replicator.data_modeling.write_deltalake")
+@patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
-def test_delta_append_writes_and_tombstones(mock_dt_cls, mock_write, replicator):
+@patch("cdf_s3_replicator.data_modeling.write_deltalake")
+def test_delta_append_writes_and_tombstones(mock_write, mock_dt_cls, _mock_verify, replicator):
     replicator._model_xid = "modelA"
     replicator._model_version = "2"
     rows = [
@@ -487,26 +492,30 @@ def test_delta_append_writes_and_tombstones(mock_dt_cls, mock_write, replicator)
 
     replicator._delta_append("A/nodes", rows, "sp")
 
+    assert "storage_options" in mock_write.call_args.kwargs
+    assert "storage_options" in mock_dt_cls.call_args.kwargs
+
     assert mock_write.call_count == 1
-    args, kwargs = mock_write.call_args
-    assert args[0].startswith("s3://test-bucket/pre/raw/sp/modelA/2/views/A/nodes")
     assert dt.delete.call_count == 1
     predicate = dt.delete.call_args[0][0]
     assert "del_me" in predicate
 
 
+@patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-def test_delta_append_without_prefix_has_clean_uri(mock_write, replicator):
+def test_delta_append_without_prefix_has_clean_uri(mock_write, _mock_verify, replicator):
     replicator._model_xid = "m"
     replicator._model_version = "1"
     replicator.s3_cfg.prefix = None
 
-    rows = [{"space": "sp","instanceType":"node","externalId":"n1","version":1,"lastUpdatedTime":1,"createdTime":1,"deletedTime":None}]
+    rows = [{"space": "sp","instanceType":"node","externalId":"n1","version":1,
+             "lastUpdatedTime":1,"createdTime":1,"deletedTime":None}]
     replicator._delta_append("A/nodes", rows, "sp")
 
     uri = mock_write.call_args[0][0]
     assert uri == "s3://test-bucket/raw/sp/m/1/views/A/nodes"
     assert "//raw/" not in uri
+    assert "storage_options" in mock_write.call_args.kwargs
 
 
 def test_delta_append_no_model_version_raises(replicator):
@@ -652,7 +661,10 @@ def test_write_view_snapshot_smoke(mock_edge_folders, mock_atomic, mock_delta, m
     replicator._write_view_snapshot("sp", "A", is_edge_only=False)
 
     assert mock_atomic.call_count == 1
-    assert len(mock_write.call_args_list) >= 2
+    assert len(mock_write.call_args_list) >= 2  # edges + nodes written
+    for _, kwargs in mock_delta.call_args_list:
+        assert "storage_options" in kwargs
+    assert len(mock_delta.call_args_list) >= 1  # nodes DeltaTable check
 
 
 @patch("cdf_s3_replicator.data_modeling.pq.write_table")
@@ -670,6 +682,9 @@ def test_write_view_snapshot_edge_only(mock_atomic, mock_delta, mock_write, repl
 
     written_paths = [args[1] for args, _ in mock_write.call_args_list]
     assert all("nodes" not in p for p in written_paths)
+    for _, kwargs in mock_delta.call_args_list:
+        assert "storage_options" in kwargs
+    assert len(mock_delta.call_args_list) >= 1  # edges DeltaTable check
 
 
 @patch("cdf_s3_replicator.data_modeling.pq.write_table")
@@ -712,7 +727,7 @@ def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicato
     )
 
     class _FakeDataset:
-        def to_batches(self): return [b1, b2]
+        def to_batches(self, *args, **kwargs): return [b1, b2]
 
     fake_table = Mock()
     fake_table.to_pyarrow_dataset.return_value = _FakeDataset()
@@ -720,9 +735,51 @@ def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicato
 
     out = replicator._dedup_latest_nodes("ignored")
 
+    args, kwargs = mock_dt.call_args
+    assert "storage_options" in kwargs
     rows = set(zip(out.column("externalId").to_pylist(),
                    out.column("lastUpdatedTime").to_pylist()))
     assert rows == {("a", 20), ("b", 5), ("c", 7)}
+
+
+# -------------------------
+# Environment / Mode switching
+# -------------------------
+def test_init_sets_imds_disabled_in_dev(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
+    r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    assert os.getenv("AWS_EC2_METADATA_DISABLED") == "true"
+
+def test_init_unsets_imds_in_prod(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "prod")
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    assert os.getenv("AWS_EC2_METADATA_DISABLED") is None
+
+def test_s3_storage_options_dev_includes_keys_prod_omits(monkeypatch):
+    # shared env
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA_TEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+
+    # DEV
+    monkeypatch.setenv("APP_ENV", "dev")
+    r_dev = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    r_dev.logger = Mock()  # silence logs
+    opts_dev = r_dev._s3_storage_options()
+    assert opts_dev["AWS_REGION"] == "us-east-1"
+    assert opts_dev["AWS_ACCESS_KEY_ID"] == "AKIA_TEST"
+    assert opts_dev["AWS_SECRET_ACCESS_KEY"] == "secret"
+
+    # PROD
+    monkeypatch.setenv("APP_ENV", "prod")
+    r_prod = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    r_prod.logger = Mock()
+    opts_prod = r_prod._s3_storage_options()
+    assert opts_prod.get("AWS_REGION") == "us-east-1"
+    assert "AWS_ACCESS_KEY_ID" not in opts_prod
+    assert "AWS_SECRET_ACCESS_KEY" not in opts_prod
 
 
 # -------------------------

@@ -75,11 +75,49 @@ class DataModelingReplicator(Extractor):
         self._model_version: str | None = None
         self.base_dir: Path = Path.cwd() / "deltalake"
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+        if os.getenv("APP_ENV", "dev").lower() in ("dev", "development"):
+            os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        else:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
         self._s3: boto3.client | None = None
         self._s3_created_at: datetime | None = None
         self._expected_node_props: set[str] | None = None
         self._view_props_by_xid: dict[tuple[str, str], set[str]] = {}
+
+
+    def _is_prod(self) -> bool:
+        """Return True when running in production mode."""
+        return os.getenv("APP_ENV", "dev").lower() in ("prod", "production")
+
+
+    def _s3_storage_options(self) -> dict:
+        """
+        Build storage options for delta-rs based on runtime mode.
+
+        Prod:
+          - rely on IAM role via IMDS / container credentials (no explicit keys)
+          - optionally pass region if known (helps delta-rs avoid an extra lookup)
+
+        Dev:
+          - use env keys if present (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY [/ AWS_SESSION_TOKEN])
+          - also pass region if set
+        """
+        region = (self.s3_cfg.region if self.s3_cfg and getattr(self.s3_cfg, "region", None) else None) or os.getenv(
+            "AWS_REGION")
+        opts: dict[str, str] = {}
+        if region:
+            opts["AWS_REGION"] = region
+
+        is_prod = self._is_prod()
+        if not is_prod:
+            if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+                opts["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID")
+                opts["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY")
+            if os.getenv("AWS_SESSION_TOKEN"):
+                opts["AWS_SESSION_TOKEN"] = os.getenv("AWS_SESSION_TOKEN")
+
+        self.logger.info("Running in %s mode", "PROD" if is_prod else "DEV")
+        return opts
 
 
     def _make_s3_client(self) -> boto3.client:
@@ -714,7 +752,7 @@ class DataModelingReplicator(Extractor):
             edge_tables = []
             for path in edge_dirs:
                 try:
-                    edge_tables.append(DeltaTable(path).to_pyarrow_table())
+                    edge_tables.append(DeltaTable(path, storage_options=self._s3_storage_options()).to_pyarrow_table())
                 except (FileNotFoundError, DeltaError):
                     pass
 
@@ -734,8 +772,8 @@ class DataModelingReplicator(Extractor):
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
                 expected = self._view_props_by_xid.get((dm_space, view_xid), set())
                 try:
-                    if DeltaTable(node_raw).files():
-                        node_tbl = (self._dedup_latest_nodes(node_raw))
+                    if DeltaTable(node_raw, storage_options=self._s3_storage_options()).files():
+                        node_tbl = self._dedup_latest_nodes(node_raw)
                     else:
                         node_tbl = self._create_empty_nodes_table()
 
@@ -1127,7 +1165,7 @@ class DataModelingReplicator(Extractor):
 
     def _align_to_existing_schema(self, s3_uri: str, tbl: pa.Table) -> pa.Table:
         try:
-            dt = DeltaTable(s3_uri)
+            dt = DeltaTable(s3_uri, storage_options=self._s3_storage_options())
         except Exception:
             return tbl
 
@@ -1196,11 +1234,7 @@ class DataModelingReplicator(Extractor):
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
         s3_uri = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{space}/{model}/{version}/views/{table}"
 
-        storage_options = {
-            "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
-            "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
-            "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
-        }
+        storage_options = self._s3_storage_options()
 
         try:
             arrow_table = pa.Table.from_pylist(rows)
@@ -1226,11 +1260,7 @@ class DataModelingReplicator(Extractor):
             if tombstones:
                 dt = DeltaTable(
                     s3_uri,
-                    storage_options={
-                        "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
-                        "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
-                        "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
-                    },
+                    storage_options=storage_options,
                 )
 
                 self._delete_tombstones(dt, tombstones)
