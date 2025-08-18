@@ -3,6 +3,10 @@ import logging
 import os
 import time
 import boto3
+import sqlite3
+from contextlib import closing
+import random
+import pyarrow.dataset as ds
 from pathlib import Path
 import uuid
 from typing import Any, Dict, Optional, Union
@@ -667,41 +671,78 @@ class DataModelingReplicator(Extractor):
 
     def _dedup_latest_nodes(self, delta_path: str) -> pa.Table:
         """
-        Return a table that keeps only the newest instance of each (space, externalId)
-        without ever materialising the entire view in pandas.
+        Keep only the newest row per (space, externalId).
 
-        Algorithm
-        ---------
-        1. Read the Delta table lazily as an Arrow dataset (stream of RecordBatches).
-        2. For each batch:
-           • sort *descending* by lastUpdatedTime
-           • drop duplicates keeping first row per (space, externalId) **within the batch**
-           • keep a Python set of (space, externalId) values we have already emitted
-        3. Concatenate the filtered batches → final Arrow Table.
+        Two-pass streaming algorithm using a tiny on-disk SQLite index:
+          1) Stream batches from the Delta table (as a PyArrow Dataset) to compute
+             max(lastUpdatedTime) per (space, externalId).
+          2) Stream again and keep only rows whose lastUpdatedTime equals that max.
+
+        Why: Arrow batches don’t guarantee global order; dedupping within a batch can
+        keep an older row if a newer one appears later. This fixes that correctness bug.
+
+        Parameters
+        ----------
+        delta_path : str
+            s3://.../raw/<space>/<model>/<version>/views/<view_xid>/nodes
+
+        Returns
+        -------
+        pa.Table
+            Deduplicated nodes.
         """
-        dset = DeltaTable(delta_path).to_pyarrow_dataset()
-        seen: set[tuple[str, str]] = set()
-        kept_batches: list[pa.RecordBatch] = []
+        dt = DeltaTable(delta_path, storage_options=self._s3_storage_options())
+        dataset = dt.to_pyarrow_dataset()
+        db_path = self.base_dir / f"dedup_{uuid.uuid4().hex}.sqlite"
 
-        for batch in dset.to_batches():
-            idx = pc.sort_indices(
-                batch,
-                sort_keys=[("lastUpdatedTime", "descending")]
-            )
-            batch_sorted = pc.take(batch, idx)
-            mask = []
-            space_arr = batch["space"].to_pylist()
-            ext_arr = batch["externalId"].to_pylist()
-            for s, x in zip(space_arr, ext_arr):
-                key = (s, x)
-                if key in seen:
-                    mask.append(False)
-                else:
-                    mask.append(True)
-                    seen.add(key)
-            filtered = batch_sorted.filter(pa.array(mask))
-            if filtered.num_rows:
-                kept_batches.append(filtered)
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("""
+                CREATE TABLE maxlut(
+                    space TEXT NOT NULL,
+                    externalId TEXT NOT NULL,
+                    lut INTEGER NOT NULL,
+                    PRIMARY KEY(space, externalId)
+                )
+            """)
+
+            for batch in dataset.to_batches(columns=["space", "externalId", "lastUpdatedTime"]):
+                sp = batch.column("space").to_pylist()
+                ex = batch.column("externalId").to_pylist()
+                lu = batch.column("lastUpdatedTime").to_pylist()
+                conn.executemany(
+                    "INSERT INTO maxlut(space, externalId, lut) VALUES(?,?,?) "
+                    "ON CONFLICT(space, externalId) DO UPDATE SET lut=MAX(lut, excluded.lut)",
+                    zip(sp, ex, lu),
+                )
+            conn.commit()
+
+            kept_batches: list[pa.RecordBatch] = []
+            for batch in dataset.to_batches():
+                sp = batch.column("space").to_pylist()
+                ex = batch.column("externalId").to_pylist()
+                lu = batch.column("lastUpdatedTime").to_pylist()
+
+                keys = list(set(zip(sp, ex)))
+                if not keys:
+                    continue
+                placeholders = ",".join(["(?,?)"] * len(keys))
+                args = [v for pair in keys for v in pair]
+                rows = conn.execute(
+                    f"SELECT space, externalId, lut FROM maxlut WHERE (space, externalId) IN ({placeholders})",
+                    args,
+                ).fetchall()
+                lut_map = {(r[0], r[1]): r[2] for r in rows}
+
+                mask = [(s, x) in lut_map and t == lut_map[(s, x)] for s, x, t in zip(sp, ex, lu)]
+                filtered = batch.filter(pa.array(mask))
+                if filtered.num_rows:
+                    kept_batches.append(filtered)
+
+        try:
+            os.remove(db_path)
+        except Exception:
+            pass
 
         if not kept_batches:
             return self._create_empty_nodes_table()
@@ -1210,6 +1251,40 @@ class DataModelingReplicator(Extractor):
         return pa.Table.from_arrays(arrays, schema=pa.schema(fields))
 
 
+    def _verify_written_rows(self, s3_uri: str, sample_rows: list[dict[str, Any]], storage_options: dict) -> None:
+        """
+        Read-after-write verification: ensure a sample of just-written keys is visible.
+
+        Uses Delta -> PyArrow Dataset and a filter on externalId. This avoids scanning
+        the whole table and works on non-partition columns.
+
+        Raises RuntimeError if any sampled key is missing.
+        """
+        if not sample_rows:
+            return
+        external_ids = sorted({r.get("externalId") for r in sample_rows if r.get("externalId")})
+        if not external_ids:
+            return
+
+        dt = DeltaTable(s3_uri, storage_options=storage_options)
+        dset = dt.to_pyarrow_dataset()
+        cond = ds.field("externalId").isin(external_ids)
+        tbl = dset.to_table(filter=cond, columns=["space", "externalId", "lastUpdatedTime"])
+
+        have = {
+            (tbl["space"][i].as_py(), tbl["externalId"][i].as_py(), tbl["lastUpdatedTime"][i].as_py())
+            for i in range(tbl.num_rows)
+        }
+        want = {
+            (r.get("space"), r.get("externalId"), r.get("lastUpdatedTime"))
+            for r in sample_rows
+        }
+        missing = want - have
+        if missing:
+            raise RuntimeError(f"Post-write verification failed: {len(missing)} sampled rows not visible in {s3_uri}")
+
+
+
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
         Safely append rows to S3-based Delta table with data validation and cleanup.
@@ -1256,6 +1331,8 @@ class DataModelingReplicator(Extractor):
                 schema_mode="merge",
                 storage_options=storage_options,
             )
+            sample_rows = random.sample(rows, min(len(rows), 50))
+            self._verify_written_rows(s3_uri, sample_rows, storage_options)
             tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
             if tombstones:
                 dt = DeltaTable(
