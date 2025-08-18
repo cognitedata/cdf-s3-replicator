@@ -849,20 +849,63 @@ class DataModelingReplicator(Extractor):
             dst_key: str,
             max_wait: int = 10,
     ) -> None:
-        """Copy S3 object and block until the new ETag is visible."""
+        """
+        Copy S3 object and block until the destination is visible.
+        Uses single-request CopyObject for <= 5 GB. Falls back to multipart copy for larger objects.
+
+        Notes
+        -----
+        • CopyObject is a single atomic action up to 5 GB; larger requires UploadPartCopy (multipart).
+        • ETag equality is sufficient here as a visibility check (object materialized),
+          not a cryptographic integrity check. S3 ETag is not guaranteed to be MD5.
+        Raises
+        ------
+        RuntimeError on timeout or if multipart copy fails.
+        """
         self._ensure_s3()
-        resp = self._s3.copy_object(
-            CopySource={"Bucket": src_bucket, "Key": src_key},
-            Bucket=dst_bucket,
-            Key=dst_key,
-        )
-        etag = resp["CopyObjectResult"]["ETag"].strip('"')
-        for _ in range(max_wait):
-            head = self._s3.head_object(Bucket=dst_bucket, Key=dst_key)
-            if head["ETag"].strip('"') == etag:
-                return
-            time.sleep(1)
-        raise RuntimeError(f"S3 eventual consistency timeout for {dst_key}")
+        head_src = self._s3.head_object(Bucket=src_bucket, Key=src_key)
+        size = head_src["ContentLength"]
+
+        if size <= 5 * 1024 ** 3:
+            resp = self._s3.copy_object(
+                CopySource={"Bucket": src_bucket, "Key": src_key},
+                Bucket=dst_bucket,
+                Key=dst_key,
+            )
+            etag = resp["CopyObjectResult"]["ETag"].strip('"')
+            for _ in range(max_wait):
+                head = self._s3.head_object(Bucket=dst_bucket, Key=dst_key)
+                if head.get("ETag", "").strip('"') == etag:
+                    return
+                time.sleep(1)
+            raise RuntimeError(f"S3 eventual consistency timeout for {dst_key}")
+
+        mpu = self._s3.create_multipart_upload(Bucket=dst_bucket, Key=dst_key)
+        upload_id = mpu["UploadId"]
+        try:
+            part_size = 128 * 1024 * 1024
+            parts = []
+            part_number = 1
+            for start in range(0, size, part_size):
+                end = min(size - 1, start + part_size - 1)
+                resp = self._s3.upload_part_copy(
+                    Bucket=dst_bucket,
+                    Key=dst_key,
+                    PartNumber=part_number,
+                    UploadId=upload_id,
+                    CopySource={"Bucket": src_bucket, "Key": src_key},
+                    CopySourceRange=f"bytes={start}-{end}",
+                )
+                parts.append({"ETag": resp["CopyPartResult"]["ETag"], "PartNumber": part_number})
+                part_number += 1
+
+            self._s3.complete_multipart_upload(
+                Bucket=dst_bucket, Key=dst_key,
+                MultipartUpload={"Parts": parts}, UploadId=upload_id
+            )
+        except Exception:
+            self._s3.abort_multipart_upload(Bucket=dst_bucket, Key=dst_key, UploadId=upload_id)
+            raise
 
 
     def _atomic_replace_files(self, file_updates: list[tuple[str, str, str]]) -> None:
