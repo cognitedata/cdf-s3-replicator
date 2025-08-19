@@ -3,6 +3,10 @@ import logging
 import os
 import time
 import boto3
+import sqlite3
+from contextlib import closing
+import random
+import pyarrow.dataset as ds
 from pathlib import Path
 import uuid
 from typing import Any, Dict, Optional, Union
@@ -75,11 +79,49 @@ class DataModelingReplicator(Extractor):
         self._model_version: str | None = None
         self.base_dir: Path = Path.cwd() / "deltalake"
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+        if os.getenv("APP_ENV", "dev").lower() in ("dev", "development"):
+            os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        else:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
         self._s3: boto3.client | None = None
         self._s3_created_at: datetime | None = None
         self._expected_node_props: set[str] | None = None
         self._view_props_by_xid: dict[tuple[str, str], set[str]] = {}
+
+
+    def _is_prod(self) -> bool:
+        """Return True when running in production mode."""
+        return os.getenv("APP_ENV", "dev").lower() in ("prod", "production")
+
+
+    def _s3_storage_options(self) -> dict:
+        """
+        Build storage options for delta-rs based on runtime mode.
+
+        Prod:
+          - rely on IAM role via IMDS / container credentials (no explicit keys)
+          - optionally pass region if known (helps delta-rs avoid an extra lookup)
+
+        Dev:
+          - use env keys if present (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY [/ AWS_SESSION_TOKEN])
+          - also pass region if set
+        """
+        region = (self.s3_cfg.region if self.s3_cfg and getattr(self.s3_cfg, "region", None) else None) or os.getenv(
+            "AWS_REGION")
+        opts: dict[str, str] = {}
+        if region:
+            opts["AWS_REGION"] = region
+
+        is_prod = self._is_prod()
+        if not is_prod:
+            if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+                opts["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID")
+                opts["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY")
+            if os.getenv("AWS_SESSION_TOKEN"):
+                opts["AWS_SESSION_TOKEN"] = os.getenv("AWS_SESSION_TOKEN")
+
+        self.logger.info("Running in %s mode", "PROD" if is_prod else "DEV")
+        return opts
 
 
     def _make_s3_client(self) -> boto3.client:
@@ -629,41 +671,78 @@ class DataModelingReplicator(Extractor):
 
     def _dedup_latest_nodes(self, delta_path: str) -> pa.Table:
         """
-        Return a table that keeps only the newest instance of each (space, externalId)
-        without ever materialising the entire view in pandas.
+        Keep only the newest row per (space, externalId).
 
-        Algorithm
-        ---------
-        1. Read the Delta table lazily as an Arrow dataset (stream of RecordBatches).
-        2. For each batch:
-           • sort *descending* by lastUpdatedTime
-           • drop duplicates keeping first row per (space, externalId) **within the batch**
-           • keep a Python set of (space, externalId) values we have already emitted
-        3. Concatenate the filtered batches → final Arrow Table.
+        Two-pass streaming algorithm using a tiny on-disk SQLite index:
+          1) Stream batches from the Delta table (as a PyArrow Dataset) to compute
+             max(lastUpdatedTime) per (space, externalId).
+          2) Stream again and keep only rows whose lastUpdatedTime equals that max.
+
+        Why: Arrow batches don’t guarantee global order; dedupping within a batch can
+        keep an older row if a newer one appears later. This fixes that correctness bug.
+
+        Parameters
+        ----------
+        delta_path : str
+            s3://.../raw/<space>/<model>/<version>/views/<view_xid>/nodes
+
+        Returns
+        -------
+        pa.Table
+            Deduplicated nodes.
         """
-        dset = DeltaTable(delta_path).to_pyarrow_dataset()
-        seen: set[tuple[str, str]] = set()
-        kept_batches: list[pa.RecordBatch] = []
+        dt = DeltaTable(delta_path, storage_options=self._s3_storage_options())
+        dataset = dt.to_pyarrow_dataset()
+        db_path = self.base_dir / f"dedup_{uuid.uuid4().hex}.sqlite"
 
-        for batch in dset.to_batches():
-            idx = pc.sort_indices(
-                batch,
-                sort_keys=[("lastUpdatedTime", "descending")]
-            )
-            batch_sorted = pc.take(batch, idx)
-            mask = []
-            space_arr = batch["space"].to_pylist()
-            ext_arr = batch["externalId"].to_pylist()
-            for s, x in zip(space_arr, ext_arr):
-                key = (s, x)
-                if key in seen:
-                    mask.append(False)
-                else:
-                    mask.append(True)
-                    seen.add(key)
-            filtered = batch_sorted.filter(pa.array(mask))
-            if filtered.num_rows:
-                kept_batches.append(filtered)
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("""
+                CREATE TABLE maxlut(
+                    space TEXT NOT NULL,
+                    externalId TEXT NOT NULL,
+                    lut INTEGER NOT NULL,
+                    PRIMARY KEY(space, externalId)
+                )
+            """)
+
+            for batch in dataset.to_batches(columns=["space", "externalId", "lastUpdatedTime"]):
+                sp = batch.column("space").to_pylist()
+                ex = batch.column("externalId").to_pylist()
+                lu = batch.column("lastUpdatedTime").to_pylist()
+                conn.executemany(
+                    "INSERT INTO maxlut(space, externalId, lut) VALUES(?,?,?) "
+                    "ON CONFLICT(space, externalId) DO UPDATE SET lut=MAX(lut, excluded.lut)",
+                    zip(sp, ex, lu),
+                )
+            conn.commit()
+
+            kept_batches: list[pa.RecordBatch] = []
+            for batch in dataset.to_batches():
+                sp = batch.column("space").to_pylist()
+                ex = batch.column("externalId").to_pylist()
+                lu = batch.column("lastUpdatedTime").to_pylist()
+
+                keys = list(set(zip(sp, ex)))
+                if not keys:
+                    continue
+                placeholders = ",".join(["(?,?)"] * len(keys))
+                args = [v for pair in keys for v in pair]
+                rows = conn.execute(
+                    f"SELECT space, externalId, lut FROM maxlut WHERE (space, externalId) IN ({placeholders})",
+                    args,
+                ).fetchall()
+                lut_map = {(r[0], r[1]): r[2] for r in rows}
+
+                mask = [(s, x) in lut_map and t == lut_map[(s, x)] for s, x, t in zip(sp, ex, lu)]
+                filtered = batch.filter(pa.array(mask))
+                if filtered.num_rows:
+                    kept_batches.append(filtered)
+
+        try:
+            os.remove(db_path)
+        except Exception:
+            pass
 
         if not kept_batches:
             return self._create_empty_nodes_table()
@@ -714,7 +793,7 @@ class DataModelingReplicator(Extractor):
             edge_tables = []
             for path in edge_dirs:
                 try:
-                    edge_tables.append(DeltaTable(path).to_pyarrow_table())
+                    edge_tables.append(DeltaTable(path, storage_options=self._s3_storage_options()).to_pyarrow_table())
                 except (FileNotFoundError, DeltaError):
                     pass
 
@@ -734,8 +813,8 @@ class DataModelingReplicator(Extractor):
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
                 expected = self._view_props_by_xid.get((dm_space, view_xid), set())
                 try:
-                    if DeltaTable(node_raw).files():
-                        node_tbl = (self._dedup_latest_nodes(node_raw))
+                    if DeltaTable(node_raw, storage_options=self._s3_storage_options()).files():
+                        node_tbl = self._dedup_latest_nodes(node_raw)
                     else:
                         node_tbl = self._create_empty_nodes_table()
 
@@ -770,20 +849,63 @@ class DataModelingReplicator(Extractor):
             dst_key: str,
             max_wait: int = 10,
     ) -> None:
-        """Copy S3 object and block until the new ETag is visible."""
+        """
+        Copy S3 object and block until the destination is visible.
+        Uses single-request CopyObject for <= 5 GB. Falls back to multipart copy for larger objects.
+
+        Notes
+        -----
+        • CopyObject is a single atomic action up to 5 GB; larger requires UploadPartCopy (multipart).
+        • ETag equality is sufficient here as a visibility check (object materialized),
+          not a cryptographic integrity check. S3 ETag is not guaranteed to be MD5.
+        Raises
+        ------
+        RuntimeError on timeout or if multipart copy fails.
+        """
         self._ensure_s3()
-        resp = self._s3.copy_object(
-            CopySource={"Bucket": src_bucket, "Key": src_key},
-            Bucket=dst_bucket,
-            Key=dst_key,
-        )
-        etag = resp["CopyObjectResult"]["ETag"].strip('"')
-        for _ in range(max_wait):
-            head = self._s3.head_object(Bucket=dst_bucket, Key=dst_key)
-            if head["ETag"].strip('"') == etag:
-                return
-            time.sleep(1)
-        raise RuntimeError(f"S3 eventual consistency timeout for {dst_key}")
+        head_src = self._s3.head_object(Bucket=src_bucket, Key=src_key)
+        size = head_src["ContentLength"]
+
+        if size <= 5 * 1024 ** 3:
+            resp = self._s3.copy_object(
+                CopySource={"Bucket": src_bucket, "Key": src_key},
+                Bucket=dst_bucket,
+                Key=dst_key,
+            )
+            etag = resp["CopyObjectResult"]["ETag"].strip('"')
+            for _ in range(max_wait):
+                head = self._s3.head_object(Bucket=dst_bucket, Key=dst_key)
+                if head.get("ETag", "").strip('"') == etag:
+                    return
+                time.sleep(1)
+            raise RuntimeError(f"S3 eventual consistency timeout for {dst_key}")
+
+        mpu = self._s3.create_multipart_upload(Bucket=dst_bucket, Key=dst_key)
+        upload_id = mpu["UploadId"]
+        try:
+            part_size = 128 * 1024 * 1024
+            parts = []
+            part_number = 1
+            for start in range(0, size, part_size):
+                end = min(size - 1, start + part_size - 1)
+                resp = self._s3.upload_part_copy(
+                    Bucket=dst_bucket,
+                    Key=dst_key,
+                    PartNumber=part_number,
+                    UploadId=upload_id,
+                    CopySource={"Bucket": src_bucket, "Key": src_key},
+                    CopySourceRange=f"bytes={start}-{end}",
+                )
+                parts.append({"ETag": resp["CopyPartResult"]["ETag"], "PartNumber": part_number})
+                part_number += 1
+
+            self._s3.complete_multipart_upload(
+                Bucket=dst_bucket, Key=dst_key,
+                MultipartUpload={"Parts": parts}, UploadId=upload_id
+            )
+        except Exception:
+            self._s3.abort_multipart_upload(Bucket=dst_bucket, Key=dst_key, UploadId=upload_id)
+            raise
 
 
     def _atomic_replace_files(self, file_updates: list[tuple[str, str, str]]) -> None:
@@ -1127,7 +1249,7 @@ class DataModelingReplicator(Extractor):
 
     def _align_to_existing_schema(self, s3_uri: str, tbl: pa.Table) -> pa.Table:
         try:
-            dt = DeltaTable(s3_uri)
+            dt = DeltaTable(s3_uri, storage_options=self._s3_storage_options())
         except Exception:
             return tbl
 
@@ -1172,6 +1294,40 @@ class DataModelingReplicator(Extractor):
         return pa.Table.from_arrays(arrays, schema=pa.schema(fields))
 
 
+    def _verify_written_rows(self, s3_uri: str, sample_rows: list[dict[str, Any]], storage_options: dict) -> None:
+        """
+        Read-after-write verification: ensure a sample of just-written keys is visible.
+
+        Uses Delta -> PyArrow Dataset and a filter on externalId. This avoids scanning
+        the whole table and works on non-partition columns.
+
+        Raises RuntimeError if any sampled key is missing.
+        """
+        if not sample_rows:
+            return
+        external_ids = sorted({r.get("externalId") for r in sample_rows if r.get("externalId")})
+        if not external_ids:
+            return
+
+        dt = DeltaTable(s3_uri, storage_options=storage_options)
+        dset = dt.to_pyarrow_dataset()
+        cond = ds.field("externalId").isin(external_ids)
+        tbl = dset.to_table(filter=cond, columns=["space", "externalId", "lastUpdatedTime"])
+
+        have = {
+            (tbl["space"][i].as_py(), tbl["externalId"][i].as_py(), tbl["lastUpdatedTime"][i].as_py())
+            for i in range(tbl.num_rows)
+        }
+        want = {
+            (r.get("space"), r.get("externalId"), r.get("lastUpdatedTime"))
+            for r in sample_rows
+        }
+        missing = want - have
+        if missing:
+            raise RuntimeError(f"Post-write verification failed: {len(missing)} sampled rows not visible in {s3_uri}")
+
+
+
     def _delta_append(self, table: str, rows: list[dict[str, Any]], space: str) -> None:
         """
         Safely append rows to S3-based Delta table with data validation and cleanup.
@@ -1196,11 +1352,7 @@ class DataModelingReplicator(Extractor):
         prefix = (self.s3_cfg.prefix.rstrip('/') + '/') if self.s3_cfg.prefix else ''
         s3_uri = f"s3://{self.s3_cfg.bucket}/{prefix}raw/{space}/{model}/{version}/views/{table}"
 
-        storage_options = {
-            "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
-            "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
-            "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
-        }
+        storage_options = self._s3_storage_options()
 
         try:
             arrow_table = pa.Table.from_pylist(rows)
@@ -1222,15 +1374,13 @@ class DataModelingReplicator(Extractor):
                 schema_mode="merge",
                 storage_options=storage_options,
             )
+            sample_rows = random.sample(rows, min(len(rows), 50))
+            self._verify_written_rows(s3_uri, sample_rows, storage_options)
             tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
             if tombstones:
                 dt = DeltaTable(
                     s3_uri,
-                    storage_options={
-                        "AWS_REGION": self.s3_cfg.region or os.getenv("AWS_REGION"),
-                        "AWS_ACCESS_KEY_ID": os.getenv("AWS_ACCESS_KEY_ID"),
-                        "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY"),
-                    },
+                    storage_options=storage_options,
                 )
 
                 self._delete_tombstones(dt, tombstones)
