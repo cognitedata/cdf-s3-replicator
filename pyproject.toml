@@ -1,5 +1,5 @@
 [project]
-name = "cdf-s3-replicator"
+name = "cdf_s3_replicator"
 version = "1.0.0"
 description = "Stream CDF Data Modeling instances to AWS S3 in Delta Lake format"
 authors = [
