@@ -1,0 +1,4 @@
+name: cdf-s3-replicator-application
+description: Application infra for CDF S3 Replicator
+runtime: nodejs
+main: index.ts
