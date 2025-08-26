@@ -21,7 +21,7 @@ jobs:
       run: pip install uv
 
     - name: Install dependencies
-      run: uv sync --frozen
+      run: uv pip install -e .
 
     - name: Run integration tests
       env:

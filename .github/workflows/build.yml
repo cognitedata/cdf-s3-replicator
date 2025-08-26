@@ -158,7 +158,7 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv pip install -e .
 
       - name: Build executable with PyInstaller
         run: |
@@ -215,7 +215,7 @@ jobs:
         install: true
 
     - name: Build Docker image
-      run: docker build -t cognite/cdf-s3-replicator:${{ needs.create-version.outputs.version }} -f Dockerfile --load .
+      run: docker build -t cognite/cdf-s3-replicator:${{ needs.create-version.outputs.version }} -f build/Dockerfile --load .
 
     - name: Export docker image
       run: docker save -o cdf-s3-replicator-${{ needs.create-version.outputs.version }}-docker.tar cognite/cdf-s3-replicator:${{ needs.create-version.outputs.version }}
