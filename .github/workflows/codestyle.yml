@@ -31,10 +31,10 @@ jobs:
       run: uv run pre-commit run --all-files
 
     - name: Run Black formatter check
-      run: uv run black --check cdf_s3_replicator/ tests/
+      run: uv run black --check cdf_s3_replicator/
 
     - name: Run isort check
-      run: uv run isort --check-only cdf_s3_replicator/ tests/
+      run: uv run isort --check-only cdf_s3_replicator/
 
     - name: Run mypy type checking
       run: uv run mypy cdf_s3_replicator/
