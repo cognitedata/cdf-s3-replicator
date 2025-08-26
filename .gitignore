@@ -168,3 +168,4 @@ states.json
 debug.log.*
 
 htmlcov/
+*.lock
