@@ -1,0 +1,22 @@
+name: PR Check Status
+
+on:
+  pull_request:
+
+jobs:
+  pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Update PR status
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: Sibz/github-status-action@v1
+        with:
+          authToken: ${{ secrets.GITHUB_TOKEN }}
+          context: 'continuous-integration/pr-head'
+          description: 'Passed'
+          state: 'success'
+          sha: ${{ github.event.pull_request.head.sha || github.sha }}

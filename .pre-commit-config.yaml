@@ -1,16 +1,41 @@
-
+# See https://pre-commit.com for more information
 repos:
--   repo: https://github.com/charliermarsh/ruff-pre-commit
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
     hooks:
-    -   id: ruff
-        args: [--fix, --exit-non-zero-on-fix, --verbose]
-    -   id: ruff-format
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: debug-statements  # Check for debugger imports and breakpoints
+
+  # Python formatting and linting with Ruff
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
     rev: v0.1.15
--   repo: local
+    hooks:
+      - id: ruff
+        name: Ruff Linter
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        name: Ruff Formatter
+
+  # Type checking with mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
     hooks:
       - id: mypy
-        name: mypy
-        entry: uv run mypy cdf_fabric_replicator
-        language: system
-        types: [python]
+        args:
+          - --config=pyproject.toml
+          - cdf_s3_replicator
         pass_filenames: false
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests

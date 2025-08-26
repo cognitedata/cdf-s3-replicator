@@ -1,0 +1,8 @@
+{
+  "name": "cdf-s3-replicator-infra",
+  "version": "1.0.0",
+  "description": "Infrastructure for CDF S3 Replicator",
+  "dependencies": {
+    "@pulumi/aws": "^6.83.0"
+  }
+}

@@ -1,71 +1,84 @@
 # The list of artifacts to be deployed with each release.
 # {version} is substituted with the version being released in path and name.
 artifacts:
-  - name: fabric-connector-standalone-{version}.zip
-    path: fabric-connector-standalone-{version}-win32.zip
-    platform: windows
-    displayName: "Windows executable"
-  - name: fabric-connector-winservice-{version}.zip
-    path: fabric-connector-winservice-{version}-win32.zip
-    platform: windows
-    displayName: "Windows service"
-  - name: fabric-connector-{version}.msi
-    path: fabric-connector-{version}.msi
-    platform: windows
-    displayName: "Windows installer"
-  - name: fabric-connector-linux-{version}.zip
-    path: fabric-connector-standalone-{version}-linux.zip
+  - name: cdf-s3-replicator-{version}.tar.gz
+    path: cdf-s3-replicator-{version}-linux.tar.gz
     platform: linux
     displayName: "Linux executable"
+  - name: cdf-s3-replicator-{version}-docker.tar
+    path: cdf-s3-replicator-{version}-docker.tar
+    platform: docker
+    displayName: "Docker image"
 
 # A list of releases, when running the release script only the entry matching the
 # provided version is used.
 versions:
-  "0.3.3":
-    description: "Documentation update."
+  "1.0.0":
+    description: "Major release - AWS S3 Data Modeling Replicator"
     changelog:
       added:
-        - "Update config documentation"
-  "0.3.2":
-    description: "Documentation update."
-    changelog:
-      added:
-        - "Update config documentation"
-  "0.3.1":
-    description: "Documentation update."
-    changelog:
-      added:
-        - "Update config documentation"
-  "0.3.0":
-    description: "Fix RAW mirroring service"
-    changelog:
-      added:
-        - "Update change detection on RAW tables in Fabric"
-  "0.2.0":
-    description: "First release candidate of Microsoft Fabric connector"
-    changelog:
-      added:
-        - "First release"
+        - "Complete refactor from Microsoft Fabric to AWS S3"
+        - "Focus exclusively on Data Modeling replication"
+        - "Replaced explicit AWS credentials with IAM role support"
+        - "Updated to use Pulumi for AWS infrastructure deployment"
+        - "Automatic environment detection for AWS (ECS/EC2)"
+        - "Explicit data model versioning in S3 paths"
+        - "Automatic cursor expiration recovery"
+        - "Tableau-optimized publish layer with atomic file replacement"
+        - "Support for BI tool"
+        - "CloudWatch integration for monitoring"
+        - "ECS Fargate deployment option"
+        - "Schema evolution handling for Tableau compatibility"
+        - "Memory optimization for large data models"
+        - "Delta Lake write performance"
 
 # Extractor definition
 extractor:
-  externalId: fabric-connector
-  name: Cognite Fabric Connector
-  description: Connect to Microsoft Fabric and exchange data with Cognite Data Fusion.
+  externalId: cdf-s3-data-modeling-replicator
+  name: CDF S3 Data Modeling Replicator
+  description: Stream CDF Data Modeling instances to AWS S3 in Delta Lake format for analytics.
   documentation: |
-    The Cognite Fabric Connector is a generic connector that can connect to Microsoft Fabric and exchange data with Cognite Data Fusion.
+    The CDF S3 Data Modeling Replicator streams data from Cognite Data Fusion (CDF) Data Modeling
+    instances to Amazon S3 in Delta Lake format, optimized for analytics and BI tools.
 
-    The replicator consists of four services:
-      * Time series replicator - Copies time series data from CDF to Fabric.
-      * Data model replicator - Copies data model nodes and edges from CDF to Fabric.
-      * Event replicator - Copies event data from CDF to Fabric.
-      * RAW replicator - Copies RAW tables from CDF to Fabric
-      * Fabric data extractor - Copies time series, events, and files from Fabric to CDF.
+    ## Key Features:
+    * **Incremental Sync** - Efficiently syncs only changed data using cursor-based change detection
+    * **Automatic Recovery** - Handles cursor expiration and connection issues gracefully
+    * **Versioned Models** - Explicit data model versioning with organized S3 paths
+    * **BI-Optimized** - Publish layer with stable Parquet files for Tableau, Power BI, and Statistica
+    * **Schema Evolution** - Automatic handling of schema changes without data loss
+    * **AWS Native** - Uses IAM roles for secure credential-free S3 access
+    * **Remote Configuration** - Configure via CDF extraction pipelines
 
-  type: global # Filterable type
+    ## Architecture:
+    The replicator creates two data layers in S3:
+    * **Raw Layer** (Delta Lake) - Incremental updates with full history at `raw/<space>/<model>/<version>/views/`
+    * **Publish Layer** (Parquet) - Deduplicated snapshots for BI at `publish/<space>/<model>/<version>/<view>/`
+
+    ## Deployment:
+    * **Local** - Run with Poetry or Docker for development
+    * **AWS** - Deploy to ECS Fargate with Pulumi infrastructure-as-code
+    * **Authentication** - Automatic IAM role detection in AWS, explicit credentials for local development
+
+    ## Supported BI Tools:
+    * Tableau Desktop
+    * Power BI
+    * Databricks
+    * Amazon Athena
+    * Apache Spark
+    * Snowflake
+    * Statistica
+  type: global
   tags:
-    - fabric
-  image: assets/fabric.svg
+    - aws
+    - s3
+    - delta-lake
+    - data-modeling
+    - bi
+    - analytics
+    - tableau
+    - parquet
+  image: assets/s3.svg
 
 schema:
   rootSchema: schema/config.schema.json
@@ -76,5 +89,4 @@ documentation:
     - docs_preamble.md
     - https://raw.githubusercontent.com/cognitedata/python-extractor-utils/318d74db49536baabb707b2587e1244037e9cc07/schema/docs/remote_tip.md
     - https://raw.githubusercontent.com/cognitedata/python-extractor-utils/318d74db49536baabb707b2587e1244037e9cc07/schema/docs/envsub.md
-    - https://raw.githubusercontent.com/cognitedata/python-extractor-utils/318d74db49536baabb707b2587e1244037e9cc07/schema/docs/keyvault.md
   skipHeader: true

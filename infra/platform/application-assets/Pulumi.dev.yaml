@@ -1,0 +1,2 @@
+environment:
+  - cdf-s3-replicator-application-assets/dev

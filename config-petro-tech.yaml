@@ -15,7 +15,7 @@ cognite:
         scopes:
             - ${COGNITE_BASE_URL}/.default
     extraction-pipeline:
-        external-id: fabric-replicator
+        external-id: s3-replicator
 
 #Extractor config
 extractor:
@@ -39,4 +39,4 @@ subscriptions:
 # sync data model
 #data_modeling:
 #  - space: cc_plant
-#    lakehouse_abfss_prefix: abfss://FabricCogniteDemo@onelake.dfs.fabric.microsoft.com/CogniteLakehouse.Lakehouse
+#    lakehouse_prefix: abfss://S3CogniteDemo@onelake.dfs.s3.microsoft.com/CogniteLakehouse.Lakehouse

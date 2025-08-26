@@ -1,18 +1,40 @@
 {
-    "$id": "data_modeling_config.schema.json",
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "description": "Data Modeling sync configuration",
-    "unevaluatedProperties": false,
-    "properties": {
-        "space": {
+  "$id": "data_modeling_config.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Data-modeling sync configuration",
+  "unevaluatedProperties": false,
+  "required": ["space"],
+  "properties": {
+    "space": {
+      "type": "string",
+      "description": "Name of the CDF data-modeling space to replicate."
+    },
+    "views": {
+      "type": "array",
+      "description": "Optional list of view externalIds to sync when NOT using data-models.",
+      "items": { "type": "string" }
+    },
+    "data_models": {
+      "type": "array",
+      "description": "Optional list of data-models inside this space that should be synced.",
+      "items": {
+        "type": "object",
+        "required": ["external_id"],
+        "properties": {
+          "external_id": {"type": "string"},
+          "views": {
+            "type": "array",
+            "description": "Views to sync from this data-model (omit ⇢ all views in the model).",
+            "items": {"type": "string"}
+          },
+          "version": {
             "type": "string",
-            "description": "Enter the data modeling space name to synchronize to Fabric"
+            "description": "Specific data model version to sync. If omitted, uses the latest version."
+          }
         },
-        "lakehouse-abfss-prefix": {
-            "type": "string",
-            "description": "Enter the full ABFSS prefix for a folder in the lakehouse."
-        }
-
+        "unevaluatedProperties": false
+      }
     }
+  }
 }

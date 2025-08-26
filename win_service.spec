@@ -3,7 +3,7 @@
 import sys
 
 try:
-    from cdf_fabric_replicator import __version__
+    from cdf_s3_replicator import __version__
 
     version = f"{__version__}-"
 except ImportError:
@@ -22,7 +22,7 @@ hiddenimports = [
 ]
 
 a = Analysis(
-    ["cdf_fabric_replicator\\winservice.py"],
+    ["cdf_s3_replicator\\winservice.py"],
     pathex=[],
     binaries=[],
     datas=[],
@@ -43,7 +43,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name=f"fabric-connector-winservice-{version}{sys.platform}",
+    name=f"s3-connector-winservice-{version}{sys.platform}",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -1,0 +1,4 @@
+name: cdf-s3-replicator-application-assets
+description: Application assets for CDF S3 Replicator
+runtime: nodejs
+main: index.js

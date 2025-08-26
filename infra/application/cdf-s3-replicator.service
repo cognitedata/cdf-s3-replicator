@@ -1,0 +1,18 @@
+[Unit]
+Description=CDF-S3-Replicator
+After=docker.service
+Requires=docker.service
+
+[Service]
+TimeoutStartSec=0
+Environment=CDF_S3_REPLICATOR_IMAGE=<<<CDF_S3_REPLICATOR_IMAGE>>>
+ExecStartPre=-/usr/bin/docker exec %n stop
+ExecStartPre=-/usr/bin/docker rm %n
+ExecStart=/usr/bin/sh -c '/opt/bin/run-app-container.sh %n'
+Restart=always
+RestartSec=10s
+Type=notify
+NotifyAccess=all
+
+[Install]
+WantedBy=default.target

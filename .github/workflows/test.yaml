@@ -4,45 +4,46 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
 jobs:
   run-tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     environment:
       name: CI
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
-        python-version: 3.11
+        python-version: ${{ matrix.python-version }}
 
-    - name: Install u
+    - name: Install uv
       run: pip install uv
 
-    - name: install requirements
-      run: uv sync --frozen
+    - name: Create venv
+      run: uv venv
 
-    - name: Run tests
-      env:
-        COGNITE_BASE_URL: ${{ vars.COGNITE_BASE_URL }}
-        COGNITE_PROJECT: ${{ vars.COGNITE_PROJECT }}
-        COGNITE_TOKEN_URL: ${{ vars.COGNITE_TOKEN_URL }}
-        COGNITE_CLIENT_ID: ${{ vars.COGNITE_CLIENT_ID }}
-        COGNITE_CLIENT_SECRET: ${{ secrets.COGNITE_CLIENT_SECRET }}
-        COGNITE_CLIENT_NAME: ${{ vars.COGNITE_CLIENT_NAME }}
-        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
-        COGNITE_TOKEN_SCOPES: ${{ vars.COGNITE_TOKEN_SCOPES }}
-        LAKEHOUSE_ABFSS_PREFIX: ${{ vars.LAKEHOUSE_ABFSS_PREFIX }}
-        DPS_TABLE_NAME: ${{ vars.DPS_TABLE_NAME }}
-        TS_TABLE_NAME: ${{ vars.TS_TABLE_NAME }}
-        EVENT_TABLE_NAME: ${{ vars.EVENT_TABLE_NAME }}
-        AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-        EXTRACTOR_RAW_TS_PATH: ${{ vars.EXTRACTOR_RAW_TS_PATH }}
-        TEST_CONFIG_PATH: tests/integration/test_config.yaml
-        EXTRACTOR_FILE_PATH: ${{ vars.EXTRACTOR_FILE_PATH }}
+    - name: Install dependencies
+      run: uv pip install -e ".[dev]"
 
-      run: uv run coverage run --source cdf_fabric_extractor -m pytest -v tests/unit
+    - name: Run unit tests with coverage
+      run: uv run coverage run --source cdf_s3_replicator -m pytest -v tests/unit
+
+    - name: Generate coverage report
+      run: uv run coverage report --fail-under=60
+
+    - name: Generate coverage HTML
+      if: matrix.python-version == '3.11'
+      run: uv run coverage html
+
+    - name: Upload coverage reports
+      if: matrix.python-version == '3.11'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: htmlcov/

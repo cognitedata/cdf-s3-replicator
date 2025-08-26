@@ -6,42 +6,43 @@ on:
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
-    environment: 
+    environment:
       name: CI
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: 3.11
+        python-version: "3.11"
 
     - name: Install uv
       run: pip install uv
 
-    - name: install requirements
-      run: uv sync --frozen
+    - name: Create venv
+      run: uv venv
+
+    - name: Install dependencies
+      run: uv pip install -e .
 
     - name: Run integration tests
       env:
+        APP_ENV: dev
         COGNITE_BASE_URL: ${{ vars.COGNITE_BASE_URL }}
         COGNITE_PROJECT: ${{ vars.COGNITE_PROJECT }}
         COGNITE_TOKEN_URL: ${{ vars.COGNITE_TOKEN_URL }}
         COGNITE_CLIENT_ID: ${{ vars.COGNITE_CLIENT_ID }}
         COGNITE_CLIENT_SECRET: ${{ secrets.COGNITE_CLIENT_SECRET }}
-        COGNITE_CLIENT_NAME: ${{ vars.COGNITE_CLIENT_NAME }}
-        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
         COGNITE_TOKEN_SCOPES: ${{ vars.COGNITE_TOKEN_SCOPES }}
-        LAKEHOUSE_ABFSS_PREFIX: ${{ vars.LAKEHOUSE_ABFSS_PREFIX }}
-        DPS_TABLE_NAME: ${{ vars.DPS_TABLE_NAME }}
-        TS_TABLE_NAME: ${{ vars.TS_TABLE_NAME }}
-        EVENT_TABLE_NAME: ${{ vars.EVENT_TABLE_NAME }}
-        AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-        EXTRACTOR_RAW_TS_PATH: ${{ vars.EXTRACTOR_RAW_TS_PATH }}
+        COGNITE_STATE_DB: ${{ vars.COGNITE_STATE_DB }}
+        COGNITE_STATE_TABLE: ${{ vars.COGNITE_STATE_TABLE }}
+        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
+        AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+        AWS_REGION: ${{ vars.AWS_REGION }}
+        S3_PREFIX: ${{ vars.S3_PREFIX }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         TEST_CONFIG_PATH: tests/integration/test_config.yaml
-        EXTRACTOR_FILE_PATH: ${{ vars.EXTRACTOR_FILE_PATH }}
 
-      run: uv run coverage run --source cdf_fabric_extractor -m pytest -v tests/integration
+      run: uv run coverage run --source cdf_s3_replicator -m pytest -v tests/integration

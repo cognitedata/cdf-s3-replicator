@@ -1,378 +1,1312 @@
-# CDF Fabric replicator
+# CDF S3 Replicator
 
-The **CDF Fabric replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to replicate data to and from **Microsoft Fabric** (Fabric).
-
-The replicator consists of four services:
-- **Time series replicator** - Copies time series data from CDF to Fabric.
-- **Data model replicator** - Copies data model nodes and edges from CDF to Fabric.
-- **Event replicator** - Copies event data from CDF to Fabric.
-- **Fabric data extractor** - Copies time series, events, and files from Fabric to CDF.
-
-All four services will run concurrently during the execution of the CDF Fabric Replicator program. The services use one state store in CDF's raw storage to maintain checkpoints of when the latest data was copied, so the services can be started and stopped and will be able to pick back up where they left off.
-
-This documentation describes two different ways to run the replicator. The first scenario supports [local development](#local-development-with-cdf-fabric-replicator) and describes how you would run the replicator on the command line or via **Visual Studio Code** (VSCode) to test or modify the code. The second scenario is [production](#building-and-deploying-with-docker-on-aks) that describes how you would build and deploy to **Azure Kubernetes Service** to support the data replication in production.
+The **CDF S3 Data Modeling Replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to stream Data Modeling instances to **Amazon S3** in Delta Lake format, optimized for analytics and BI tools.
 
 ## Table of Contents
-- [CDF Fabric replicator](#cdf-fabric-replicator)
-  - [Table of Contents](#table-of-contents)
-  - [Local Development with CDF Fabric replicator](#local-development-with-cdf-fabric-replicator)
-  - [Setting up Data Point Subscriptions](#setting-up-data-point-subscriptions)
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Local Development](#local-development)
+  - [Installation](#installation)
   - [Environment Variables](#environment-variables)
-    - [CDF Variables](#cdf-variables)
-    - [Fabric Variables](#fabric-variables)
-    - [Fabric Extractor Variables](#fabric-extractor-variables)
-    - [Integration Test Variables](#integration-test-variables)
-  - [Config YAML](#config-yaml)
-    - [Remote config](#remote-config)
-  - [Running with Poetry](#running-with-poetry)
-    - [Command-line](#command-line)
-    - [Visual Studio Code](#visual-studio-code)
-  - [Building and Deploying with Docker on AKS](#building-and-deploying-with-docker-on-aks)
-    - [Pre-requisites](#pre-requisites)
-      - [Set Target Platform Architecture](#set-target-platform-architecture)
-      - [Creating an AKS Cluster with Managed Identity](#creating-an-aks-cluster-with-managed-identity)
-      - [Build Docker to Push to ACR](#build-docker-to-push-to-acr)
-    - [Use helm to deploy your container to AKS](#use-helm-to-deploy-your-container-to-aks)
-      - [Configure values.yaml](#configure-valuesyaml)
-        - [Image Repository](#image-repository)
-        - [Environment Variables](#environment-variables-1)
-      - [Connect to your AKS cluster](#connect-to-your-aks-cluster)
-      - [Install Via Helm](#install-via-helm)
-    - [Running test\_helm\_chart\_deployment Test](#running-test_helm_chart_deployment-test)
-  - [Testing](#testing)
-    - [Setting Up Tests](#setting-up-tests)
-      - [Environment Variables](#environment-variables-2)
-      - [VS Code Test Explorer](#vs-code-test-explorer)
-      - [Poetry](#poetry)
-    - [Github Action](#github-action)
-    - [Best Practices for Adding Tests](#best-practices-for-adding-tests)
+  - [Configuration File](#configuration-file)
+  - [Running Locally](#running-locally)
+- [Building and Testing](#building-and-testing)
+  - [Docker Build](#docker-build)
+  - [Running Tests](#running-tests)
+- [Production Deployment on AWS](#production-deployment-on-aws)
+  - [Infrastructure Components](#infrastructure-components)
+  - [Deployment Steps](#deployment-steps)
+  - [CI/CD Pipeline](#cicd-pipeline)
+- [Configuration Management](#configuration-management)
+  - [Data Model Configuration](#data-model-configuration)
+  - [Performance Tuning](#performance-tuning)
+  - [Remote Configuration](#remote-configuration)
+- [Connecting BI Tools](#connecting-bi-tools)
+  - [Tableau Integration](#tableau-integration)
+  - [Power BI](#power-bi)
+  - [Other Tools](#other-tools)
+- [Operations and Maintenance](#operations-and-maintenance)
+  - [Monitoring](#monitoring)
+  - [Troubleshooting](#troubleshooting)
+  - [State Management](#state-management)
+  - [Backup and Recovery](#backup-and-recovery)
+- [Security](#security)
+- [Cost Optimization](#cost-optimization)
+- [Testing](#testing)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+- [Migration from Previous Versions](#migration-from-previous-versions)
+- [API Reference](#api-reference)
+- [Contributing](#contributing)
+- [Support](#support)
 
-## Local Development with CDF Fabric replicator
+## Overview
 
-Follow these instructions for doing Local Development with CDF Fabric replicator:
+The CDF S3 Data Modeling Replicator streams data from Cognite Data Fusion (CDF) Data Modeling spaces to Amazon S3, providing:
 
-1. Clone repo: `git clone https://github.com/cognitedata/cdf-fabric-replicator.git`
-2. Install Python (3.10, 3.11, or 3.12).
-3. Install [Poetry](https://python-poetry.org/docs/#installation).
-    > Note: Poetry should be installed in a virtual environment, see the [installation instructions](https://python-poetry.org/docs/#installation) for more details.
-4. Setup [environment variables](#environment-variables) and [Config file](#config-yaml) to point to your data source and destination.
-5. At this point, you need to install your project dependencies and run the application. You can either do that from the [command-line](#command-line) or from [Visual Studio Code](#visual-studio-code).
+- **Incremental sync** with cursor-based change detection and automatic recovery
+- **Versioned data models** with explicit version tracking in S3 paths
+- **Tableau-optimized publish layer** with stable Parquet files for BI consumption
+- **Automatic schema evolution** handling type changes without data loss
+- **AWS IAM role integration** for secure, credential-free S3 access in production
+- **Remote configuration** via CDF extraction pipelines for easy updates
+- **State management** in CDF RAW for resumable syncs
 
-## Setting up Data Point Subscriptions
+The replicator maintains checkpoints in CDF's RAW storage, allowing it to be stopped and restarted without data loss, always picking up where it left off.
 
-The time series replicator uses [data point subscriptions](https://cognite-sdk-python.readthedocs-hosted.com/en/latest/time_series.html#create-data-point-subscription) to get updates on incoming time series data. If only one subscription with a single partition is defined in the configuration file, then the subscription is created automatically by the Time Series Replicator, based on the values in the configuration file.
+## Architecture
 
-## Environment Variables
-
-You can optionally copy the contents of `.env.example` to a `.env` file that will be used to set the values in a config yaml file:
-
-### CDF Variables
-
-The CDF variables define the location of the project in Cognite Data Fusion. In addition, a state storage location in the raw storage of the project is used to keep track of what data has been synced.
-
-- `COGNITE_BASE_URL`: The base URL of the Cognite project, i.e. `https://<cluster_name>.cognitedata.com`.
-- `COGNITE_PROJECT`: The project ID of the Cognite project.
-- `COGNITE_TOKEN_URL`: The URL to obtain the authentication token for the Cognite project, i.e. `https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/token`.
-- `COGNITE_CLIENT_ID`: The client ID for authentication with the Cognite project.
-- `COGNITE_CLIENT_SECRET`: The client secret for authentication with the Cognite project.
-- `COGNITE_STATE_DB`: The database in CDF raw storage where the replicator state should be stored.
-- `COGNITE_STATE_TABLE`: The table in CDF raw storage where the replicator state should be stored. The replicator will create the table if it does not exist.
-- `COGNITE_EXTRACTION_PIPELINE`: The extractor pipeline in CDF for the replicator. [Learn more about configuring extractors remotely](https://docs.cognite.com/cdf/integration/guides/interfaces/configure_integrations).
-- `COGNITE_TOKEN_SCOPES`: OAUTH access scope to be granted to the token. i.e. `${COGNITE_BASE_URL}/.default`.
-
-### Fabric Variables
-
-Fabric Variables define where in Microsoft Fabric that contextualized data is written. Data is written in Delta format, which requires a Fabric Lakehouse. Tables will be created automatically.
-
-- `LAKEHOUSE_ABFSS_PREFIX`: The prefix for the Azure Blob File System Storage (ABFSS) path. Should match pattern `abfss://<workspace_id>@msit-onelake.dfs.fabric.microsoft.com/<lakehouse_id>`. Get this value by selecting "Properties" on your Lakehouse Tables location and copying "ABFSS path".
-- `DPS_TABLE_NAME`: The name of the table where data point values and timestamps should be stored in Fabric. The replicator will create the table if it does not exist.
-- `TS_TABLE_NAME`: The name of the table where time series metadata should be stored in Fabric. The replicator will create the table if it does not exist.
-- `EVENT_TABLE_NAME`: The name of the table where event data should be stored in Fabric. The replicator will create the table if it does not exist.
-
-### Fabric Extractor Variables
-
-Fabric Extractor Variables defines the Lakehouse and tables where raw data lands before being ingested into CDF.
-
-- `EXTRACTOR_EVENT_PATH`: The table path for the events table in a Fabric lakehouse. It's the relative path after the ABFSS prefix, i.e. `Tables/RawEvents`.
-- `EXTRACTOR_EVENT_INCREMENTAL_FIELD`: The column used for incremental reads from the table. Typically a timestamp or counter column.
-- `EXTRACTOR_FILE_PATH`: The single file path or directory of the files in a Fabric lakehouse. It's the relative path after the ABFSS prefix, i.e. `Files` or `Files/Tanks.png`.
-- `EXTRACTOR_RAW_TS_PATH`: The file path for the raw timeseries table in a Fabric lakehouse. It's the relative path after the ABFSS prefix i.e. `Tables/RawTS`.
-- `EXTRACTOR_DATASET_ID`: Specifies the ID of the extractor dataset when the data lands in CDF.
-- `EXTRACTOR_TS_PREFIX`: Specifies the prefix for the extractor timeseries when the data lands in CDF.
-- `EXTRACTOR_RAW_TABLE_PATH`: Specifies the table path a table in Fabric lakehouse which should written into CDF RAW. Default config supports one table, multiple are needed the `example_config.yaml` needs to be modified to add more tables.
-- `EXTRACTOR_RAW_INCREMENTAL_FIELD`: The column used for incremental reads from the table. Typically a timestamp or counter column.
-- `EXTRACTOR_RAW_TABLE_NAME`: Name of the table in CDF RAW to write to.
-- `EXTRACTOR_RAW_DB_NAME`: Name of the database in CDF RAW to write to.
-
-
-### Integration Test Variables
-
-Integration Test Variables are only used for integration tests. See [Testing](#testing) for more information.
-
-- `TEST_CONFIG_PATH`: Specifies the path to the test configuration file with which test versions of the replicator are configured.
-- `COGNITE_CLIENT_NAME`: The reported to the CogniteClient in the integration tests
-
-
-### Additional Config Values
-
-There are additional configuration values that are defined in `example_config.yaml` but do not have environment variables associated with them:
-- `extractor: subscription-batch-size` - Sets the batch size for the amount of data points to retrieve at a time from the CDF subscription in the Time Series Replicator.
-- `extractor: ingest-batch-size` - Sets the batch size for the amount of data points to write at a time to the Fabric Lakehouse in the Time Series Replicator.
-- `source: read_batch_size` - Sets the batch size for the number of rows to retrieve at a time from the Fabric Lakehouse in the Fabric Extractor.
-- `event: batch_size` - Sets the batch size for the number of events to retrieve at a time from CDF in the Events Replicator.
-
-
-## Config YAML
-The replicator reads its configuration from a YAML file specified in the run command. You can configure your own YAML file based on the one in [example_config.yaml](example_config.yaml) in the repo. That configuration file uses the environment variables in `.env`, the configuration can also be set using hard-coded values.
-
-`subscriptions` and `data_modeling` configurations are a list, so you can configure multiple data point subscriptions or data modeling spaces to replicate into Fabric.
-`raw_tables` is also a list, to be able configure multiple tables in Fabric to replicate into CDF RAW.
-
-### Remote config
-The [example_config.yaml](example_config.yaml) contains all configuration required to run the replicator. Alternatively [config_remote.yaml](build/config_remote.yaml) is provided to point to an Extraction Pipeline within a CDF project that contains the full configuration file. This allows a Docker image to be built and deployed with a minimal configuration, and lets you make changes to the full configuration without rebuilding the image. [Learn more about configuring extractors remotely](https://docs.cognite.com/cdf/integration/guides/interfaces/configure_integrations).
-
-## Running with Poetry
-
-To run the `cdf_fabric_replicator` application, you can use Poetry, a dependency management and packaging tool for Python.
-
-First, make sure you have Poetry installed on your system. If not, you can install it by following the instructions in the [Poetry documentation](https://python-poetry.org/docs/#installation).
-
-### Command-line
-
-Once Poetry is installed, navigate to the root directory of your project in your terminal.
-
-Next, run the following command to install the project dependencies:
-```bash
-poetry install
+### System Architecture
+![architecture.jpg](assets/architecture.jpg)
+```
+┌─────────────────────────────────────────┐
+│         CDF Data Modeling API           │
+│  (Spaces, Models, Views, Instances)     │
+└────────────────┬────────────────────────┘
+                 │ Sync API
+                 ↓
+┌─────────────────────────────────────────┐
+│       CDF S3 Replicator Service         │
+│  ┌─────────────────────────────────┐    │
+│  │ DataModelingReplicator          │    │
+│  │ - Cursor Management              │    │
+│  │ - Schema Evolution               │    │
+│  │ - Delta Lake Writer              │    │
+│  └─────────────────────────────────┘    │
+└────────────────┬────────────────────────┘
+                 │ IAM Role (in AWS)
+                 ↓
+┌─────────────────────────────────────────┐
+│            Amazon S3                    │
+│  ┌─────────────────────────────────┐    │
+│  │ Raw Layer (Delta Tables)        │    │
+│  │ - Incremental updates           │    │
+│  │ - Full history                  │    │
+│  ├─────────────────────────────────┤    │
+│  │ Publish Layer (Parquet)         │    │
+│  │ - Deduplicated snapshots        │    │
+│  │ - Tableau-optimized             │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+                 ↓
+         ┌───────────────┐
+         │   BI Tools    │
+         │ (Tableau, etc)│
+         └───────────────┘
 ```
 
-Finally, run the replicator:
-```bash
-poetry run cdf_fabric_replicator <name of config file>
+### S3 Data Structure
+```
+s3://your-bucket/prefix/
+├── raw/                                    # Incremental updates in Delta format
+│   └── <space>/
+│       └── <model_external_id>/
+│           └── <version>/                  # Explicit version number
+│               └── views/
+│                   ├── <view_name>/
+│                   │   ├── nodes/          # Delta table with node instances
+│                   │   │   ├── _delta_log/
+│                   │   │   └── *.parquet
+│                   │   └── edges/          # Delta table with edge instances
+│                   │       ├── _delta_log/
+│                   │       └── *.parquet
+│                   └── _edges/             # Edge-only views
+│                       ├── _delta_log/
+│                       └── *.parquet
+└── publish/                                # Deduplicated snapshots for BI tools
+    └── <space>/
+        └── <model_external_id>/
+            └── <version>/
+                └── <view_name>/
+                    ├── nodes.parquet       # Latest deduplicated nodes
+                    └── edges.parquet       # Latest edges
 ```
 
-### Visual Studio Code
-
-Alternatively, if you are using Visual Studio Code, just open the folder of the root directory of your project.
-
-You must still install Poetry as mentioned above in addition to the [Python Extension](https://marketplace.visualstudio.com/items?itemName=ms-python.python) for VSCode.
-
-The included ".vscode/launch.json" file will add the following two launch actions to your debug menu:
-
-- poetry install - Run this the first time you start your code to install dependencies into the Poetry virtual environment
-- poetry run - Run this after the dependencies are installed. It will start your project with an attached debugger. For more information see [Debugging in Visual Studio Code](https://code.visualstudio.com/Docs/editor/debugging).
-
-## Building and Deploying with Docker on AKS
-
-Building and deploying with Docker on **Azure Kubernetes Service** (AKS) is a popular choice for deploying applications to production for several reasons:
-
-1. Containerization: Docker allows developers to package their application and its dependencies into a container, ensuring consistency and portability across different environments. Containers provide isolation, making it easier to manage and deploy applications.
-
-2. Scalability: AKS is a managed Kubernetes service that provides automatic scaling of application instances based on demand. Kubernetes allows developers to define the desired state of their application and automatically scales the application based on resource utilization.
-
-3. Orchestration: Kubernetes provides powerful orchestration capabilities, allowing developers to manage and deploy containers at scale. It handles tasks such as load balancing, service discovery, and rolling updates, making it easier to manage and maintain production deployments.
-
-4. High Availability: AKS ensures high availability by distributing application instances across multiple nodes in a cluster. If a node fails, Kubernetes automatically reschedules the affected containers on other available nodes, ensuring that the application remains accessible and resilient.
-
-5. Infrastructure as Code: Docker and Kubernetes configurations can be defined as code using tools like Helm and Kubernetes manifests. This allows developers to version control and automate the deployment process, making it easier to reproduce and manage production deployments.
-
-6. Integration with Azure Services: AKS integrates seamlessly with other Azure services, such as Azure Container Registry (ACR) for storing and managing container images, Azure Monitor for monitoring and diagnostics, and Azure DevOps for CI/CD pipelines. This provides a comprehensive ecosystem for building, deploying, and managing applications in the Azure cloud.
-
-By leveraging Docker and AKS, developers can achieve a streamlined and efficient deployment process, ensuring their applications are scalable, reliable, and easily manageable in a production environment.
-
-### Pre-requisites
-
-#### Set Target Platform Architecture
-
-If you are running the Docker Container on ARM Architecture, you will need to use platform emulation for the Docker run command. You can do this by running the following command:
-
-```bash
-docker run -i -t <image-name> --platform linux/arm64 
+### AWS Infrastructure (Production)
+```
+AWS Account
+├── Secrets Manager
+│   └── /org/cdf-s3-replicator/runtime     # CDF credentials
+├── ECS Fargate
+│   ├── Cluster: cdf-s3-replicator
+│   ├── Service: cdf-s3-replicator
+│   └── Task Definition
+│       ├── IAM Task Role                  # S3 access without credentials
+│       ├── Container: cdf-s3-replicator
+│       └── Environment Variables
+├── ECR
+│   └── Repository: cdf-s3-replicator      # Docker images
+├── CloudWatch
+│   ├── Log Group: /org/cdf-s3-replicator
+│   └── Metrics & Alarms
+└── S3
+    └── Bucket: your-data-bucket           # Delta Lake tables
 ```
 
-#### Creating an AKS Cluster with Managed Identity
+## Prerequisites
 
-Azure Kubernetes Service (AKS) can use Azure Managed Identities to interact with other Azure services. This eliminates the need to manage service principals and rotate credentials. The Fabric Replicator requires managed identity on AKS to be enabled to run.
+### CDF Requirements
+- **CDF project** with Data Modeling enabled
+- **Extraction pipeline** created for remote configuration
+- **Service principal** with the following capabilities:
+  - `dataModels:read` - Read data model definitions
+  - `dataModelInstances:read` - Query instances from views
+  - `raw:read`, `raw:write` - Manage state store
+  - `extractionPipelines:read` - Read remote configuration (optional)
 
-To create an AKS cluster with Managed Identity and an attached ACR, you can use the Azure CLI:
+### AWS Requirements
+- **AWS account** with appropriate IAM permissions
+- **S3 bucket** for storing Delta Lake tables
+- For production deployment:
+  - VPC with private subnets and NAT gateway
+  - ECS Fargate or EC2 capacity
 
+### Local Development Requirements
+- **Python** 3.10, 3.11, or 3.12
+- **Poetry** for dependency management
+- **Docker** for containerization
+- **AWS CLI** configured with credentials
+
+### Production Deployment Requirements
+- **Pulumi CLI** for infrastructure as code
+- **Node.js** 18+ for Pulumi TypeScript
+- **AWS CLI** with appropriate permissions
+
+## Local Development
+
+### Installation
+
+1. **Clone the repository**:
 ```bash
-az aks create -g MyResourceGroup -n MyManagedCluster --generate-ssh-keys --attach-acr MyACR --enable-managed-identity
+git clone https://github.com/cognitedata/cdf-s3-replicator.git
+cd cdf-s3-replicator
 ```
 
-#### Build Docker to Push to ACR
-
-Note: When you build the CDF Fabric Replicator from docker, the docker image is configured to use the config located in the Extraction Pipeline in CDF. You will need to configure the yaml file in the Extraction Pipeline in CDF.
-
-First, you should build your your docker image locally:
-
+2. **Install Python** (3.10, 3.11, or 3.12):
 ```bash
-docker build -t <MyImageName> -f ./build/Dockerfile . 
+# Using pyenv (recommended)
+pyenv install 3.12.0
+pyenv local 3.12.0
 ```
 
-Before you can push an image to your ACR, you need to tag it with the login server name of your ACR instance:
-
+3. **Create virtual environment**:
 ```bash
-docker tag <MyImageName>:latest <myregistry>.azurecr.io/<MyImageName>:latest
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-Next, log in to your ACR:
-
+4. **Install dependencies**:
 ```bash
-az acr login --name <myregistry>
+pip install -e ".[dev]"
+# Or using uv:
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e ".[dev]"
 ```
 
-Finally, push your image to your ACR instance:
+### Environment Variables
+
+Create a `.env` file in the project root:
 
 ```bash
-docker push <myregistry>.azurecr.io/<MyImageName>:latest
+# ===== Environment Configuration =====
+APP_ENV=  # Options: For development: dev, or development. For production: prod, or production
+
+# ===== CDF Configuration =====
+COGNITE_BASE_URL=https://your-cluster.cognitedata.com
+COGNITE_PROJECT=your-project-name
+COGNITE_CLIENT_ID=your-client-id
+COGNITE_CLIENT_SECRET=your-client-secret
+COGNITE_TOKEN_URL=https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+COGNITE_TOKEN_SCOPES=https://your-cluster.cognitedata.com/.default
+
+# ===== State Storage in CDF RAW =====
+COGNITE_STATE_DB=s3_replicator_state      # Database in CDF RAW
+COGNITE_STATE_TABLE=data_modeling_state   # Table for sync state
+COGNITE_EXTRACTION_PIPELINE=s3-data-modeling-replicator
+
+# ===== AWS S3 Configuration =====
+AWS_S3_BUCKET=your-bucket-name
+S3_PREFIX=cdf-data/                       # Optional path prefix
+AWS_REGION=us-east-1
+
+# ===== AWS Credentials (LOCAL DEVELOPMENT ONLY) =====
+# These are NOT needed in AWS deployment (uses IAM roles)
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
 ```
 
-Now, your Docker image is available in your ACR and can be pulled from your AKS cluster.
+### Configuration File
 
-### Use helm to deploy your container to AKS
-
-#### Configure values.yaml
-
-The `values.yaml` file is a key part of your Helm chart as it allows you to set the default configuration values for the chart. These values can be overridden by users during installation or upgrade.
-
-Here's a step-by-step guide on how to configure your `values.yaml` file:
-
-1. Open the `values.yaml` file in your chart directory.
-
-2. Set the default values for your chart. 
-
-Some key values you need to fill out are:
-
-##### Image Repository
+Create `config.yaml` with your data modeling configuration:
 
 ```yaml
-image:
-  repository: <ACRREPOSITORYNAME>.azurecr.io/<IMAGENAME>
-  pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest"
+# Logging configuration
+logger:
+  console:
+    level: INFO  # Options: DEBUG, INFO, WARNING, ERROR
+
+# CDF connection settings
+cognite:
+  host: ${COGNITE_BASE_URL}
+  project: ${COGNITE_PROJECT}
+
+  idp-authentication:
+    token-url: ${COGNITE_TOKEN_URL}
+    client-id: ${COGNITE_CLIENT_ID}
+    secret: ${COGNITE_CLIENT_SECRET}
+    scopes:
+      - ${COGNITE_TOKEN_SCOPES}
+
+  # Optional: extraction pipeline for remote config
+  extraction-pipeline:
+    external-id: ${COGNITE_EXTRACTION_PIPELINE}
+
+# Extractor settings
+extractor:
+  state-store:
+    raw:
+      database: ${COGNITE_STATE_DB}
+      table: ${COGNITE_STATE_TABLE}
+
+  # Sync intervals
+  poll-time: 900               # Seconds between sync cycles (15 min)
+  snapshot-interval: 900       # Seconds between publish snapshots (15 min)
+
+  # Batch sizes for performance tuning
+  subscription-batch-size: 10000    # Instances per query
+  ingest-batch-size: 100000        # Instances per batch
+  s3-ingest-batch-size: 1000       # Rows per S3 write
+
+# Data models to replicate
+data_modeling:
+  # Example 1: Sync specific model (latest version, all views)
+  - space: analytics-space
+    data_models:
+      - external_id: CustomerModel
+
+  # Example 2: Sync specific version and views
+  - space: test-space
+    data_models:
+      - external_id: TestModel
+        version: "2"
+        views: [CustomerView, OrderView, ProductView]
+
+# S3 destination configuration
+destination:
+  s3:
+    bucket: ${AWS_S3_BUCKET}
+    prefix: ${S3_PREFIX}       # Optional: prefix for all objects
+    region: ${AWS_REGION}
 ```
 
-##### Environment Variables
-The environmental variables should be filled in with values that correspond to your CDF and Lakehouse environment, these allow the CDF Fabric Replicator to run.
+### Running Locally
+
+#### Using Python directly
+```bash
+python -m cdf_s3_replicator config.yaml
+```
+
+#### Using Docker
+```bash
+# Build image
+docker build --no-cache -f build/Dockerfile -t cdf-s3-replicator:latest .
+
+# Run container
+docker run --rm --env-file .env cdf-s3-replicator:latest
+```
+
+#### Expected Output
+```
+2024-01-15 10:00:00 INFO: Starting CDF S3 Replicator
+2024-01-15 10:00:01 INFO: Processing space: production-space
+2024-01-15 10:00:02 INFO: Syncing CustomerModel version 1
+2024-01-15 10:00:05 INFO: Writing to s3://your-bucket/cdf-data/raw/production-space/CustomerModel/1/views/CustomerView/nodes
+2024-01-15 10:00:45 INFO: Cycle finished in 45.2s - sleeping 855s
+```
+
+#### Using Docker
+```bash
+# Unit tests
+pytest tests/unit/ -v
+
+# Integration tests (requires test environment)
+pytest tests/integration/ -v
+
+# Coverage report
+coverage run --source cdf_s3_replicator -m pytest tests/unit/
+coverage report
+coverage html  # Creates htmlcov/index.html
+```
+
+### Open the HTML coverage report
+```bash
+macOS: open htmlcov/index.html
+Linux: xdg-open htmlcov/index.html
+Windows: start htmlcov\index.html
+```
+
+## Building and Testing
+
+### Docker Build
+
+Build the Docker image:
+```bash
+docker build -t cdf-s3-replicator:latest -f Dockerfile .
+
+# For specific platform
+docker build --platform linux/amd64 -t cdf-s3-replicator:latest .
+
+# With build arguments
+docker build \
+  --build-arg PYTHON_VERSION=3.12-slim \
+  -t cdf-s3-replicator:latest .
+```
+
+### Running Tests
+
+#### Unit Tests
+```bash
+# Run all unit tests
+pytest tests/unit/
+
+# Run with coverage
+coverage run -m pytest tests/unit/
+coverage report
+
+# Run specific test file
+pytest tests/unit/test_data_modeling.py
+
+# Run with verbose output
+pytest -v tests/unit/
+```
+
+#### Integration Tests
+```bash
+# Set test environment variables
+export TEST_CONFIG_PATH=tests/integration/test_config.yaml
+export COGNITE_CLIENT_NAME=cdf-s3-replicator-tests
+
+# Run integration tests
+poetry run pytest tests/integration/
+
+# Run specific integration test
+poetry run pytest tests/integration/test_data_modeling_integration.py
+```
+
+#### Test Coverage Requirements
+- Minimum coverage: 60%
+- Focus on unit test coverage for individual functions
+- Integration tests for end-to-end workflows
+
+## Production Deployment on AWS
+
+### Infrastructure Components
+
+#### 1. Secrets Management (`infra/platform/secrets/`)
+
+Stores CDF credentials securely in AWS Secrets Manager.
+
+**Directory structure**:
+```
+infra/platform/secrets/
+├── index.ts          # Secrets Manager resources
+├── Pulumi.yaml       # Project configuration
+├── Pulumi.prod.yaml  # Production stack config
+├── package.json      # Node dependencies
+└── deploy.sh         # Deployment script
+```
+
+#### 2. Application Assets (`infra/platform/application-assets/`)
+
+Creates ECR repository, S3 buckets, and CloudWatch logs.
+
+**Directory structure**:
+```
+infra/platform/application-assets/
+├── index.ts          # ECR, S3, CloudWatch resources
+├── Pulumi.yaml       # Project configuration
+├── Pulumi.prod.yaml  # Production stack config
+├── package.json      # Node dependencies
+└── deploy.sh         # Deployment script
+```
+
+#### 3. Application Deployment (`infra/application/`)
+
+Deploys the container to ECS Fargate with IAM roles.
+
+**Directory structure**:
+```
+infra/application/
+├── index.ts          # ECS Fargate deployment
+├── Pulumi.yaml       # Project configuration
+├── Pulumi.prod.yaml  # Production stack config
+├── package.json      # Node dependencies
+└── deploy.sh         # Deployment script
+```
+
+### Deployment Steps
+
+#### Step 1: Prerequisites
+
+```bash
+# Install Pulumi
+curl -fsSL https://get.pulumi.com | sh
+export PATH=$PATH:$HOME/.pulumi/bin
+
+# Configure AWS CLI
+aws configure
+# Or use IAM role if deploying from EC2/CloudShell
+
+# Login to Pulumi
+pulumi login  # Use Pulumi Cloud or self-hosted backend
+```
+
+#### Step 2: Create AWS Secrets
+
+```bash
+aws secretsmanager create-secret \
+  --name /your-org/cdf-s3-replicator/runtime \
+  --secret-string '{
+    "APP_ENV": "prod",
+    "COGNITE_BASE_URL": "https://your-cluster.cognitedata.com",
+    "COGNITE_PROJECT": "your-project",
+    "COGNITE_TOKEN_URL": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+    "COGNITE_CLIENT_ID": "your-client-id",
+    "COGNITE_CLIENT_SECRET": "your-secret",
+    "COGNITE_TOKEN_SCOPES": "https://your-cluster.cognitedata.com/.default",
+    "COGNITE_STATE_DB": "s3_replicator_state",
+    "COGNITE_STATE_TABLE": "data_modeling_state",
+    "COGNITE_EXTRACTION_PIPELINE": "s3-data-modeling-replicator"
+  }'
+```
+
+#### Step 3: Deploy Infrastructure
+
+```bash
+# Deploy secrets infrastructure
+cd infra/platform/secrets
+npm install
+pulumi stack init prod
+pulumi config set aws:region us-east-1
+pulumi up --yes
+
+# Deploy application assets
+cd ../application-assets
+npm install
+pulumi stack init prod
+pulumi config set aws:region us-east-1
+pulumi up --yes
+
+# Note the ECR URL from output
+export ECR_URL=$(pulumi stack output ecrRepoUrl)
+```
+
+#### Step 4: Build and Push Docker Image
+
+```bash
+# Return to project root
+cd ../../../
+
+# Build Docker image
+docker build -t cdf-s3-replicator:latest .
+
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin ${ECR_URL}
+
+# Tag and push image
+docker tag cdf-s3-replicator:latest ${ECR_URL}:latest
+docker push ${ECR_URL}:latest
+```
+
+#### Step 5: Deploy Application
+
+```bash
+cd infra/application
+npm install
+pulumi stack init prod
+pulumi config set aws:region us-east-1
+
+# Set VPC configuration
+pulumi config set vpcId vpc-0123456789abcdef0
+pulumi config set privateSubnetIds '["subnet-123","subnet-456"]'
+
+# Reference other stacks
+pulumi config set secrets-stack your-org/cdf-s3-replicator-secrets/prod
+pulumi config set assets-stack your-org/cdf-s3-replicator-application-assets/prod
+
+# Deploy
+pulumi up --yes
+
+# Note the outputs
+pulumi stack output clusterName  # ECS cluster name
+pulumi stack output serviceName   # ECS service name
+```
+
+#### Step 6: Verify Deployment
+
+```bash
+# Check ECS service status
+aws ecs describe-services \
+  --cluster $(pulumi stack output clusterName) \
+  --services $(pulumi stack output serviceName) \
+  --query 'services[0].{Status:status,Running:runningCount,Desired:desiredCount}'
+
+# View logs
+aws logs tail /your-org/cdf-s3-replicator --follow --since 5m
+
+# Check S3 for data
+aws s3 ls s3://your-bucket/cdf-data/raw/ --recursive --summarize
+```
+
+### CI/CD Pipeline
+
+The project includes GitHub Actions workflows for continuous integration:
+
+- **build.yml** - Builds Linux binaries and Docker images on pull requests and releases
+- **test.yml** - Runs unit tests across Python versions 3.10, 3.11, 3.12
+- **codestyle.yml** - Enforces code quality with Ruff and mypy
+- **integration_tests.yml** - Tests against real CDF and S3 services
+- **release.yml** - Publishes releases to Docker Hub and creates GitHub releases
+
+For automated deployment to AWS, you can create your own deployment workflow using the Pulumi infrastructure provided in the `infra/` directory.
+
+## Configuration Management
+
+### Data Model Configuration at Extraction Pipeline config in CDF
+
+Configure which models and views to replicate:
 
 ```yaml
-env:
-  cognite:
-    tokenUrl: ""
-    clientId: ""
-    clientSecret: ""
-    tokenScopes: ""
-    clientName: ""
-    project: ""
-    baseUrl: ""
-    stateDb: ""
-    stateTable: ""
-    extractionPipeline: ""
-  lakehouse:
-    timeseriesTable: ""
-    abfssPrefix: ""
-  extractor:
-    eventPath: ""
-    filePath: ""
-    rawTsPath: ""
-    datasetId: ""
-    tsPrefix: ""
-    eventTableName: ""
+data_modeling:
+  # Option 1: Sync specific models (latest versions)
+  - space: analytics-space
+    data_models:
+      - external_id: CustomerModel
+      - external_id: OrderModel
+
+  # Option 2: Sync specific versions
+  - space: staging-space
+    data_models:
+      - external_id: TestModel
+        version: "2"  # Lock to version 2
+
+  # Option 3: Sync specific views only
+  - space: reporting-space
+    data_models:
+      - external_id: ReportingModel
+        views: [SummaryView, DetailView]
 ```
 
-#### Connect to your AKS cluster
+### Performance Tuning
 
-1. Login to your azure account:
+Adjust batch sizes and intervals based on your data volume:
 
-    ```bash
-    az login
-    ```
+```yaml
+extractor:
+  # Sync frequency
+  poll-time: 300               # Check every 5 minutes for frequent updates
+  snapshot-interval: 3600      # Publish snapshots hourly for stability
 
-2. Set the cluster subscription:
+  # Batch sizes (adjust based on instance size and network)
+  subscription-batch-size: 50000   # Larger for high-volume spaces
+  ingest-batch-size: 500000        # Maximum instances in memory
+  s3-ingest-batch-size: 10000     # Rows per S3 write operation
+```
 
-    ```bash
-    az account set --subscription <Subscription ID>
-    ```
+**Tuning guidelines**:
+- **Low volume** (<100k instances): Use defaults
+- **Medium volume** (100k-1M instances): Increase batch sizes by 2-5x
+- **High volume** (>1M instances): Increase batch sizes by 10x, add more memory to container
 
-3. Download cluster credentials
+### Remote Configuration
 
-    ```bash
-    az aks get-credentials --resource-group <RESOURCE GROUP> --name <ASK CLUSTER NAME> --overwrite-existing
-    ```
+Store configuration in CDF extraction pipeline for easier updates:
 
-#### Install Via Helm
+```python
+from cognite.client import CogniteClient
+import yaml
 
-To deploy your application to your Kubernetes cluster run the following command:
+client = CogniteClient()
+
+# Load local config
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+# Upload to CDF
+client.extraction_pipelines.config.create(
+    external_id="s3-data-modeling-replicator",
+    config=yaml.dump(config),
+    description="Configuration for S3 replicator"
+)
+
+# The replicator will automatically reload this config
+```
+
+Update configuration without redeploying:
+```python
+# Update specific settings
+config['extractor']['poll_time'] = 600  # Change to 10 minutes
+config['data_modeling'].append({
+    'space': 'new-space',
+    'data_models': [{'external_id': 'NewModel'}]
+})
+
+# Push update
+client.extraction_pipelines.config.create(
+    external_id="s3-data-modeling-replicator",
+    config=yaml.dump(config)
+)
+```
+
+## Connecting BI Tools
+
+### Tableau Integration
+
+#### Connection Steps
+
+1. **Open Tableau Desktop** (2021.1 or later)
+
+2. **Connect to S3**:
+   - Connect to Data → More → Amazon S3
+   - Enter AWS credentials or use IAM role
+   - Region: `us-east-1` (or your region)
+
+3. **Navigate to publish layer**:
+   ```
+   s3://your-bucket/cdf-data/publish/<space>/<model>/<version>/<view>/
+   ```
+
+4. **Select Parquet files**:
+   - `nodes.parquet` - Latest deduplicated node instances
+   - `edges.parquet` - Latest edge instances
+
+5. **Create relationships**:
+   ```sql
+   -- Join edges to start nodes
+   nodes.space = edges."startNode.space"
+   AND nodes.externalId = edges."startNode.externalId"
+
+   -- Join edges to end nodes (create second nodes instance)
+   nodes_end.space = edges."endNode.space"
+   AND nodes_end.externalId = edges."endNode.externalId"
+   ```
+
+#### Tableau Best Practices
+
+**Use extracts for performance**:
+```tableau
+Data → Extract → Create Extract
+Schedule: Every hour (align with snapshot_interval)
+Incremental refresh on: lastUpdatedTime
+```
+
+**Handle timestamps**:
+```tableau
+// Convert Unix milliseconds to datetime
+DATEADD('second', [lastUpdatedTime]/1000, #1970-01-01#)
+```
+
+**Create calculated fields**:
+```tableau
+// Instance identifier
+[space] + ":" + [externalId]
+
+// Data freshness
+DATEDIFF('minute', [Last Updated], NOW())
+```
+
+### Power BI
+
+1. Get Data → More → Amazon S3
+2. Enter S3 URL: `s3://your-bucket/cdf-data/publish/`
+3. Select folder with Parquet files
+4. Transform data in Power Query if needed
+5. Create relationships between nodes and edges tables
+
+### Other Tools
+
+The publish layer works with any tool that supports Parquet:
+- **Databricks**: Use `spark.read.parquet("s3://...")`
+- **Amazon Athena**: Create external tables pointing to S3
+- **Apache Spark**: Direct Parquet reader
+- **Snowflake**: External stages with S3
+- **Statistica**: Import Parquet files via Data > Import > File
+
+## Operations and Maintenance
+
+### Monitoring
+
+#### CloudWatch Dashboards
+
+Create monitoring dashboard:
+```bash
+aws cloudwatch put-dashboard \
+  --dashboard-name CDF-S3-Replicator \
+  --dashboard-body file://dashboard.json
+```
+
+Example `dashboard.json`:
+```json
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          ["AWS/ECS", "CPUUtilization", {"stat": "Average"}],
+          [".", "MemoryUtilization", {"stat": "Average"}]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Resource Utilization"
+      }
+    },
+    {
+      "type": "log",
+      "properties": {
+        "query": "SOURCE '/your-org/cdf-s3-replicator' | fields @timestamp, @message | filter @message like /ERROR/ | sort @timestamp desc | limit 20",
+        "region": "us-east-1",
+        "title": "Recent Errors"
+      }
+    }
+  ]
+}
+```
+
+#### CloudWatch Alarms
+
+Set up alerts:
+```bash
+# High CPU usage
+aws cloudwatch put-metric-alarm \
+  --alarm-name cdf-s3-replicator-cpu-high \
+  --alarm-description "CPU usage above 80%" \
+  --metric-name CPUUtilization \
+  --namespace AWS/ECS \
+  --statistic Average \
+  --period 300 \
+  --threshold 80 \
+  --comparison-operator GreaterThanThreshold \
+  --evaluation-periods 2
+
+# Task failures
+aws cloudwatch put-metric-alarm \
+  --alarm-name cdf-s3-replicator-task-failed \
+  --alarm-description "ECS task failed" \
+  --metric-name FailedTaskCount \
+  --namespace AWS/ECS \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanThreshold
+```
+
+#### Log Analysis
+
+Common log queries:
+```bash
+# View sync progress
+aws logs filter-log-events \
+  --log-group-name /your-org/cdf-s3-replicator \
+  --filter-pattern "Cycle finished"
+
+# Check for errors
+aws logs filter-log-events \
+  --log-group-name /your-org/cdf-s3-replicator \
+  --filter-pattern "ERROR"
+
+# Monitor cursor resets
+aws logs filter-log-events \
+  --log-group-name /your-org/cdf-s3-replicator \
+  --filter-pattern "cursor expired"
+```
+
+### Troubleshooting
+
+#### Common Issues and Solutions
+
+| Issue | Symptoms | Solution                                                                       |
+|-------|----------|--------------------------------------------------------------------------------|
+| **Cursor Expired** | Logs show "cursor has expired" | Auto-recovers on next cycle. For immediate fix, delete the state table in CDF. |
+| **Memory Issues** | Container killed with OOM | Increase task memory or reduce batch sizes                                     |
+| **S3 Permission Denied** | "Access Denied" errors | Check IAM task role has S3 permissions                                         |
+| **No Data Syncing** | No new files in S3 | Verify data model exists and has instances                                     |
+| **Schema Conflicts** | "Type mismatch" errors | Check for schema changes in CDF views                                          |
+| **Slow Performance** | Long sync times | Increase batch sizes or add more tasks                                         |
+
+#### Debug Container Locally
 
 ```bash
-helm install <MYAppName> ./cdf-fabric-replicator-chart
+# Pull image from ECR
+ECR_URL=$(aws ssm get-parameter \
+  --name /your-org/cdf-s3-replicator/ecr-url \
+  --query Parameter.Value --output text)
+
+aws ecr get-login-password | docker login --username AWS --password-stdin ${ECR_URL}
+docker pull ${ECR_URL}:latest
+
+# Run with shell access
+docker run -it --rm \
+  --entrypoint /bin/bash \
+  -e COGNITE_CLIENT_ID=test \
+  ${ECR_URL}:latest
+
+# Test CDF connection
+python -c "
+from cognite.client import CogniteClient
+client = CogniteClient()
+print(client.data_modeling.spaces.list())
+"
 ```
 
-To verify the status of your deployment run:
+### State Management
 
-```bash
-kubectl get pods
+#### View Current State
+
+```python
+from cognite.client import CogniteClient
+
+client = CogniteClient()
+
+# List all sync states
+states = client.raw.rows.list(
+    db_name="s3_replicator_state",
+    table_name="data_modeling_state",
+    limit=-1
+)
+
+for state in states:
+    print(f"{state.key}: Last updated {state.last_updated_time}")
 ```
 
-### Running test_helm_chart_deployment Test
+#### Reset Specific View
 
-`test_helm_chart_deployment` test is skipped when running integration tests as it requires an AKS cluster, and an container in ACR. The test uses Helm to deploy the image to AKS and checks that the status is running and runs for 1 minute without crashing. To run the test:
+```python
+# Reset a stuck view
+client.raw.rows.delete(
+    db_name="s3_replicator_state",
+    table_name="data_modeling_state",
+    key="production_CustomerModel_1_CustomerView_nodes"
+)
+```
 
-1. Remove `@pytest.mark.skip(reason="Skipping as this test requires an AKS cluster.")` from the top of the test.
-2. Ensure your Docker image is build and pushed to an ACR
-3. Ensure your AKS cluster is in and you are able to connect to it from your terminal.
-4. Run `poetry run pytest tests/integration/test_helm.py -s` to run the test_helm_chart_deployment test.
+#### Full State Reset
+
+```python
+# WARNING: This will cause full resync
+client.raw.tables.delete(
+    db_name="s3_replicator_state",
+    name="data_modeling_state"
+)
+```
+
+#### Delta Table Maintenance
+
+```python
+from deltalake import DeltaTable
+
+# Optimize Delta tables
+def optimize_delta_tables(bucket, prefix):
+    s3 = boto3.client('s3')
+
+    # List all Delta tables
+    response = s3.list_objects_v2(
+        Bucket=bucket,
+        Prefix=f"{prefix}raw/",
+        Delimiter='/'
+    )
+
+    for obj in response.get('CommonPrefixes', []):
+        table_path = f"s3://{bucket}/{obj['Prefix']}"
+        try:
+            dt = DeltaTable(table_path)
+
+            # Compact small files
+            dt.optimize.compact()
+
+            # Remove old versions (keep 7 days)
+            dt.vacuum(retention_hours=168)
+
+            print(f"Optimized {table_path}")
+        except Exception as e:
+            print(f"Failed to optimize {table_path}: {e}")
+```
+
+## Security
+
+### Security Features
+
+1. **No hardcoded credentials**
+   - AWS: Uses IAM roles in production
+   - CDF: Credentials in AWS Secrets Manager
+
+2. **Encryption**
+   - S3: Server-side encryption (AES-256)
+   - Secrets: Encrypted in Secrets Manager
+   - Network: TLS for all connections
+
+3. **Network isolation**
+   - ECS tasks run in private subnets
+   - No public IP addresses
+   - NAT gateway for outbound traffic
+
+4. **Least privilege IAM**
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "s3:GetObject",
+           "s3:PutObject",
+           "s3:DeleteObject",
+           "s3:ListBucket"
+         ],
+         "Resource": [
+           "arn:aws:s3:::your-bucket/*",
+           "arn:aws:s3:::your-bucket"
+         ]
+       }
+     ]
+   }
+   ```
+
+### Security Best Practices
+
+1. **Rotate credentials regularly**
+   ```bash
+   # Enable automatic rotation in Secrets Manager
+   aws secretsmanager rotate-secret \
+     --secret-id /your-org/cdf-s3-replicator/runtime \
+     --rotation-lambda-arn arn:aws:lambda:...
+   ```
+
+2. **Enable VPC endpoints**
+   ```typescript
+   // In Pulumi infrastructure
+   new aws.ec2.VpcEndpoint("s3-endpoint", {
+     vpcId: vpcId,
+     serviceName: "com.amazonaws.us-east-1.s3",
+   });
+   ```
+
+3. **Enable CloudTrail logging**
+   ```bash
+   aws cloudtrail create-trail \
+     --name cdf-s3-replicator-audit \
+     --s3-bucket-name audit-logs
+   ```
+
+4. **Use AWS Security Hub**
+   - Monitor security posture
+   - Compliance checks
+   - Security findings
 
 ## Testing
-To maintain the quality and integrity of the `cdf-fabric-replicator` codebase, we have tests utilizing the [pytest](https://docs.pytest.org/en/8.2.x/) framework that run as part of the `test` Github Action.  There are two kinds of tests:
-- **Unit** - Unit tests cover a single module or function in the code and do not require any external connections to run.  Unit test files are 1 to 1 with files under `cdf-fabric-replicator`.
-- **Integration** - Integration tests cover interactions between modules as part of a service and connect to CDF and Fabric as part of the test.  Integration test files are 1 to 1 with the services of the `cdf-fabric-replicator` such as the Timeseries Replicator, Fabric Extractor, etc
 
-### Setting Up Tests
-***Before running tests, ensure you have a CDF project and a Fabric workspace dedicated for testing. The integration tests create and delete CDF objects and data and require a clean environment for accurate assertions.  You risk losing data if you run these tests in a dev/production environment.***
+### Unit Tests
 
-#### Environment Variables
-Environment variables are not needed to run the unit tests, but are needed for the integration tests both to run locally and to run in the Github Action.
+Unit tests cover individual modules without external connections.
 
-The environment variables for the tests are the same ones used for the replicator, with the addition of `TEST_CONFIG_PATH`, which is where the config file for the tests is located (in the repo, this file is under `tests/integration/test_config.yaml`).
+#### Running Unit Tests
 
-Set your test environment variables in a `.env` file.  The integration tests will load the values from this file upon startup.
+```bash
+# Run all unit tests
+poetry run pytest tests/unit/ -v
 
-#### VS Code Test Explorer
-Tests can run using the test explorer in VS Code.  To set up the test explorer, ensure you have the Python extension installed in VS Code and follow the instructions under [configure tests](https://code.visualstudio.com/docs/python/testing#_configure-tests) in the VS Code docs, configuring tests using the Pytest framework.  Your test setup should look like this:
+# Run with coverage
+poetry run pytest tests/unit/ --cov=cdf_s3_replicator --cov-report=html
 
-![VS Code Test Explorer](./images/testexplorer.png)
+# Run specific test module
+poetry run pytest tests/unit/test_data_modeling.py::TestDataModeling
 
-Running tests using the explorer allows you to debug tests and easily manage which tests to run.  Ensure that the tests also run using `poetry` before pushing commits.
-#### Poetry
-`poetry` can be used to run the tests in addition to running the replicator itself.  Run all commands at the project root.  These are the important poetry commands to know:
-- `poetry install` - Installs dependencies and sets configuration.  If a library is added or the coverage settings are modified this will need to be run.  `pytest` and `pytest_mock` are included in the `pyproject.toml`, so running an install will get your environment ready to run tests.
-- `poetry run pytest <test_directory/>` - Runs all tests found under the test-directory path.  For example, to run just unit tests set test_directory to `tests/unit`.
-- `poetry run coverage run -m pytest <test_directory/>`  - Runs the tests and creates a `.coverage` file that can be used to generate a report.
-- `poetry run coverage report` - Shows the coverage report in the terminal.
-A combination of the test run and coverage report is available as a VS Code launch configuration under `poetry test coverage`.
-
-In the `pyproject.toml` file, there are configuration settings for the coverage, including the failure threshold and which files to exclude from coverage:
-
-```toml
-[tool.coverage.run]
-omit = [".*", "*/tests/*"]
-[tool.coverage.report]
-fail_under = 90
+# Run with markers
+poetry run pytest tests/unit/ -m "not slow"
 ```
 
-### Github Action
-The Github action runs the unit tests for both Python 3.10 and 3.11 using `poetry`.  This action will run for every pull request created for the repo.  *As integration tests are not part of the pull request actions, please ensure that the integration tests of the service related to your code changes passes successfully locally before making a PR.*
+#### Writing Unit Tests
 
-***Note: Integration tests will not pass for non-members of the `cdf-fabric-replicator` repository due to repository secret access for environment variables.***
+```python
+# tests/unit/test_data_modeling.py
+import pytest
+from unittest.mock import Mock, patch
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
 
-### Best Practices for Adding Tests
-- If a fixture can be shared across multiple tests, add it to the `conftest.py`.  Otherwise, keep fixtures that are specific to a single test in the test file.  For example, the Cognite SDK Client belongs in `conftest.py` as all the integration tests use it to seed test data.
-- Ensure that coverage is at least 90% after any code additions.  Focus especially on unit test coverage as that helps ensure that all code paths are covered and any breaking changes can be isolated to the function where they occurred.
-- Individual unit tests should not take longer than a second to run, excluding test collection.  Additionally, while integration tests take longer, pay attention to increases in test run times, as that may indicate that inefficient code was introduced.
-- Limit mocks to external connections and complex functions that should be covered in separate tests.  For example, mock calls to the Cognite API using the client, but don't mock simple helper functions in the code.
-- For unit tests, make sure the assertions that you add for function calls are useful.  For example, ensuring that the state store was synchronized after a data write is a useful assertion, whereas asserting that a helper method was called may become stale after a refactor.
-- Add integration tests when a new feature or scenario is introduced to the codebase that wasn't captured in the integration tests before.  For example, add a test if a new data type from CDF or Fabric is being replicated.  If a code addition is an expansion of an existing feature, consider if adding more parameters would cover the scenario.
+class TestDataModeling:
+    @pytest.fixture
+    def replicator(self):
+        with patch('cdf_s3_replicator.data_modeling.CogniteClient'):
+            return DataModelingReplicator(
+                metrics=Mock(),
+                stop_event=Mock()
+            )
 
+    def test_is_running_in_aws_local(self, replicator):
+        with patch.dict('os.environ', {}, clear=True):
+            assert not replicator._is_running_in_aws()
+
+    def test_is_running_in_aws_ecs(self, replicator):
+        with patch.dict('os.environ', {'ECS_CONTAINER_METADATA_URI_V4': 'http://...'}):
+            assert replicator._is_running_in_aws()
+
+    def test_get_storage_options_local(self, replicator):
+        with patch.dict('os.environ', {
+            'AWS_ACCESS_KEY_ID': 'test_key',
+            'AWS_SECRET_ACCESS_KEY': 'test_secret'
+        }):
+            options = replicator._get_storage_options()
+            assert 'AWS_ACCESS_KEY_ID' in options
+            assert 'AWS_SECRET_ACCESS_KEY' in options
+
+    def test_get_storage_options_aws(self, replicator):
+        with patch.object(replicator, '_is_running_in_aws', return_value=True):
+            options = replicator._get_storage_options()
+            assert 'AWS_ACCESS_KEY_ID' not in options
+```
+
+### Integration Tests
+
+Integration tests verify end-to-end functionality with real connections.
+
+#### Setting Up Integration Tests
+
+```bash
+# Create test environment file
+cat > .env.test <<EOF
+COGNITE_BASE_URL=https://test-cluster.cognitedata.com
+COGNITE_PROJECT=test-project
+# ... other test credentials
+TEST_CONFIG_PATH=tests/integration/test_config.yaml
+EOF
+
+# Run integration tests
+poetry run pytest tests/integration/ --env-file .env.test
+```
+
+#### Writing Integration Tests
+
+```python
+# tests/integration/test_end_to_end.py
+import pytest
+from cognite.client import CogniteClient
+from cdf_s3_replicator.data_modeling import DataModelingReplicator
+
+@pytest.mark.integration
+class TestEndToEnd:
+    @pytest.fixture(scope="class")
+    def setup_test_data(self):
+        client = CogniteClient()
+
+        # Create test space and model
+        space = client.data_modeling.spaces.create("test-space")
+
+        # Create test view
+        view = client.data_modeling.views.create({
+            "space": "test-space",
+            "externalId": "TestView",
+            "version": "1",
+            "properties": {
+                "name": {"type": "text"},
+                "value": {"type": "float64"}
+            }
+        })
+
+        # Create test instances
+        nodes = [
+            {
+                "space": "test-space",
+                "externalId": f"node-{i}",
+                "sources": [{
+                    "source": view.as_id(),
+                    "properties": {
+                        "name": f"Node {i}",
+                        "value": i * 10.5
+                    }
+                }]
+            }
+            for i in range(10)
+        ]
+        client.data_modeling.instances.apply(nodes=nodes)
+
+        yield
+
+        # Cleanup
+        client.data_modeling.spaces.delete("test-space")
+
+    def test_full_sync_cycle(self, setup_test_data):
+        replicator = DataModelingReplicator(
+            metrics=Mock(),
+            stop_event=Mock(),
+            override_config_path="tests/integration/test_config.yaml"
+        )
+
+        # Run one sync cycle
+        replicator.process_spaces()
+
+        # Verify data in S3
+        import boto3
+        s3 = boto3.client('s3')
+
+        response = s3.list_objects_v2(
+            Bucket='test-bucket',
+            Prefix='cdf-data/raw/test-space/'
+        )
+
+        assert response['KeyCount'] > 0
+        assert any('TestView/nodes' in obj['Key'] for obj in response['Contents'])
+```
+
+### Test Coverage Requirements
+
+```toml
+# pyproject.toml
+[tool.coverage.run]
+omit = [".*", "*/tests/*"]
+
+[tool.coverage.report]
+fail_under = 60
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+```
+
+### Continuous Integration Tests
+
+```yaml
+# .github/workflows/test.yaml
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install
+
+      - name: Run unit tests
+        run: poetry run pytest tests/unit/ --cov=cdf_s3_replicator
+
+      - name: Check coverage
+        run: poetry run coverage report --fail-under=60
+```
+
+## API Reference
+
+### Main Classes
+
+#### DataModelingReplicator
+
+Main replication service that syncs CDF data models to S3.
+
+```python
+class DataModelingReplicator(Extractor):
+    def __init__(
+        self,
+        metrics: Metrics,
+        stop_event: CancellationToken,
+        override_config_path: Optional[str] = None
+    ):
+        """Initialize the replicator."""
+
+    def run(self) -> None:
+        """Main run loop."""
+
+    def process_spaces(self) -> None:
+        """Process configured spaces and models."""
+
+    def replicate_view(
+        self,
+        dm_cfg: DataModelingConfig,
+        dm_external_id: str,
+        dm_version: str,
+        view: dict
+    ) -> None:
+        """Replicate a single view."""
+```
+
+#### Configuration Classes
+
+```python
+@dataclass
+class DataModelingConfig:
+    space: str
+    views: list[str] | None = None
+    data_models: list[DMModel] | None = None
+
+@dataclass
+class DMModel:
+    external_id: str
+    views: list[str] | None = None
+    version: str | None = None
+
+@dataclass
+class S3DestinationConfig:
+    bucket: str
+    prefix: str | None = None
+    region: str | None = None
+```
+
+### Key Methods
+
+#### Delta Lake Operations
+
+```python
+def _delta_append(
+    self,
+    table: str,
+    rows: list[dict[str, Any]],
+    space: str
+) -> None:
+    """Append rows to S3 Delta table."""
+
+def _write_view_snapshot(
+    self,
+    dm_space: str,
+    view_xid: str,
+    is_edge_only: bool
+) -> None:
+    """Write Tableau-optimized snapshot."""
+```
+
+## Support
+
+### Getting Help
+
+- **GitHub Issues**: [https://github.com/cognitedata/cdf-s3-replicator/issues](https://github.com/cognitedata/cdf-s3-replicator/issues)
+- **Documentation**: This README
+
+### Reporting Issues
+
+Include in bug reports:
+- Replicator version
+- Error messages and stack traces
+- Configuration (sanitized)
+- Steps to reproduce
+
+## License
+
+Apache License 2.0 - See [LICENSE](LICENSE) file for details.

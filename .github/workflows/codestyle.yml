@@ -1,8 +1,9 @@
-name: ruff and mypy
+name: Code Quality
 
 on:
   pull_request:
     branches: [ main ]
+
 jobs:
   codestyle:
     runs-on: ubuntu-latest
@@ -12,16 +13,19 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: 3.11
+        python-version: "3.11"
+
+    - name: Install uv
+      run: pip install uv
+
+    - name: Create venv
+      run: uv venv
 
     - name: Install dependencies
-      run: |
-        python3 -m pip install uv
-        uv sync --frozen
-    - name: Linting and static code checks
-      run: |
-        uv run pre-commit run --all
-        
+      run: uv pip install -e ".[dev]"
+
+    - name: Run pre-commit hooks
+      run: uv run pre-commit run --all-files
