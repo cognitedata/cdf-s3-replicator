@@ -1,0 +1,15 @@
+repository:
+  name: cdf-s3-replicator
+  description: The **CDF S3 Data Modeling Replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to stream Data Modeling instances to **Amazon S3** in Delta Lake format, optimized for analytics and BI tools.
+  default_branch: main
+  has_issues: true
+  has_wiki: false
+
+branches:
+  - name: main
+    protection:
+      required_status_checks:
+        strict: true
+        contexts:
+          - "CodeQL Analysis"
+          - "continuous-integration/pr-head"

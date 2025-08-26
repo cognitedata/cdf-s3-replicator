@@ -40,19 +40,23 @@ RESOURCES = Path(__file__).parent / "resources"
 # Helpers
 # -------------------------
 
-def _raw_views_base(replicator: DataModelingReplicator, space: str, model_xid: str, model_version: str) -> str:
+
+def _raw_views_base(
+    replicator: DataModelingReplicator, space: str, model_xid: str, model_version: str
+) -> str:
     """
     s3://<bucket>/<optional-prefix>raw/<space>/<model>/<version>/views
     """
     s3 = replicator.s3_cfg
     assert s3 is not None and s3.bucket, "replicator.s3_cfg must be initialized"
-    prefix = (s3.prefix.rstrip('/') + '/') if s3.prefix else ''
+    prefix = (s3.prefix.rstrip("/") + "/") if s3.prefix else ""
     return f"s3://{s3.bucket}/{prefix}raw/{space}/{model_xid}/{model_version}/views"
 
 
 # -------------------------
 # Fixtures
 # -------------------------
+
 
 @pytest.fixture(scope="function")
 def dm_replicator(test_config) -> DataModelingReplicator:
@@ -296,6 +300,7 @@ def expected_path_to_dataframe(
 # Tests
 # -------------------------
 
+
 def test_data_model_sync_service_creation(
     dm_replicator,
     instance_table_paths,
@@ -308,9 +313,15 @@ def test_data_model_sync_service_creation(
 
     mv, selected = dm_replicator._get_data_model_views(
         dm_replicator.config.data_modeling[0],
-        SimpleNamespace(external_id="Movie", version=None, views=dm_replicator.config.data_modeling[0].data_models[0].views),
+        SimpleNamespace(
+            external_id="Movie",
+            version=None,
+            views=dm_replicator.config.data_modeling[0].data_models[0].views,
+        ),
     )
-    assert mv is not None and len(selected) > 0, "Replicator didn't find any views on the Movie model"
+    assert (
+        mv is not None and len(selected) > 0
+    ), "Replicator didn't find any views on the Movie model"
 
     for _ in range(3):
         dm_replicator.process_spaces()
@@ -346,9 +357,9 @@ def test_data_model_sync_service_update(
     dt = get_delta_table(None, actor_nodes_path)
     df = (
         dt.to_pandas()
-          .drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
-          .sort_index(axis=1)
-          .reset_index(drop=True)
+        .drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
+        .sort_index(axis=1)
+        .reset_index(drop=True)
     )
 
     assert (df["externalId"] == "arnold_schwarzenegger").sum() >= 2

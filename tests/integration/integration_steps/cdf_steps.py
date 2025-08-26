@@ -7,6 +7,7 @@ from cognite.client.data_classes.data_modeling.ids import DataModelId
 
 TIMESTAMP_COLUMN = "timestamp"
 
+
 def create_data_model_in_cdf(
     test_space: Space, test_dml: str, cognite_client: CogniteClient
 ):

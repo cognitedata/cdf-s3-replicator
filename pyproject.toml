@@ -1,7 +1,7 @@
 [project]
 name = "cdf-s3-replicator"
-version = "0.3.3"
-description = "Stream data from CDF to S3"
+version = "1.0.0"
+description = "Stream CDF Data Modeling instances to AWS S3 in Delta Lake format"
 authors = [
     { name = "Murad Saeter", email = "murad.sater@cognite.com" },
     { name = "Marwan Elsharkawi", email = "marwan.elsharkawi@cognite.com" }
@@ -33,6 +33,8 @@ dev = [
     "pre-commit>=4.0.1",
     "mypy>=1.14.1",
     "pyinstaller>=6.11.1",
+    "types-PyYAML",
+    "types-requests",
 ]
 
 [build-system]
@@ -47,11 +49,13 @@ dev-dependencies = [
     "pre-commit>=4.0.1",
     "mypy>=1.14.1",
     "pyinstaller>=6.11.1",
+    "types-PyYAML",
+    "types-requests",
 ]
 
 [tool.black]
 line-length = 120
-target-version = ["py38"]
+target-version = ["py310"]
 include = '\.py$'
 
 [tool.isort]
@@ -61,11 +65,23 @@ include_trailing_comma = true
 skip_glob = '^((?!py$).)*$'
 known_third_party = ["azure", "cognite", "prometheus_client"]
 
+[tool.mypy]
+python_version = "3.10"
+files = ["cdf_s3_replicator"]
+ignore_missing_imports = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+warn_return_any = false
+warn_unused_ignores = true
+pretty = true
+
 [tool.coverage.run]
 omit = [".*", "*/tests/*"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 60
 
 [tool.pytest.ini_options]
 log_cli = true

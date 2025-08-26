@@ -1,6 +1,13 @@
 import json
 from types import SimpleNamespace
-from datetime import datetime, UTC
+from datetime import datetime
+
+try:  # Py 3.11+
+    from datetime import UTC
+except ImportError:  # Py 3.10 and earlier
+    from datetime import timezone as _tz
+
+    UTC = _tz.utc
 import os
 from unittest.mock import Mock, patch
 
@@ -17,11 +24,14 @@ from cdf_s3_replicator import data_modeling as dm
 # Fixtures / helpers
 # -------------------------
 
+
 class _ViewKey:
     def __init__(self, external_id):
         self.external_id = external_id
+
     def __hash__(self):
         return hash(self.external_id)
+
     def __eq__(self, other):
         return getattr(other, "external_id", None) == self.external_id
 
@@ -47,7 +57,9 @@ def replicator():
     return r
 
 
-def mk_node(space="sp", xid="n1", ver=1, last=111, created=100, deleted=None, view_xid="viewA"):
+def mk_node(
+    space="sp", xid="n1", ver=1, last=111, created=100, deleted=None, view_xid="viewA"
+):
     props_data = {_ViewKey(view_xid): {"p1": "v1", "p2": 2}}
     properties = SimpleNamespace(data=props_data)
     return SimpleNamespace(
@@ -61,8 +73,18 @@ def mk_node(space="sp", xid="n1", ver=1, last=111, created=100, deleted=None, vi
     )
 
 
-def mk_edge(space="sp", xid="e1", ver=1, last=111, created=100, deleted=None, type_xid="edgeType",
-            start=("sp", "n1"), end=("sp", "n2"), prop_view="edgeView"):
+def mk_edge(
+    space="sp",
+    xid="e1",
+    ver=1,
+    last=111,
+    created=100,
+    deleted=None,
+    type_xid="edgeType",
+    start=("sp", "n1"),
+    end=("sp", "n2"),
+    prop_view="edgeView",
+):
     start_node = SimpleNamespace(space=start[0], external_id=start[1])
     end_node = SimpleNamespace(space=end[0], external_id=end[1])
     type_obj = SimpleNamespace(external_id=type_xid)
@@ -86,8 +108,14 @@ def mk_edge(space="sp", xid="e1", ver=1, last=111, created=100, deleted=None, ty
 # Query builders
 # -------------------------
 
+
 def test_node_query_for_view_builds_expected(replicator):
-    view = {"space": "vsp", "externalId": "vxid", "version": 7, "properties": {"a": 1, "b": 2}}
+    view = {
+        "space": "vsp",
+        "externalId": "vxid",
+        "version": 7,
+        "properties": {"a": 1, "b": 2},
+    }
     q = replicator._node_query_for_view(view)
 
     assert "nodes" in q.with_
@@ -114,9 +142,16 @@ def test_node_query_uses_view_space_for_containerid(monkeypatch, replicator):
         seen["externalId"] = externalId
         return (space, externalId)
 
-    monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
+    monkeypatch.setattr(
+        "cdf_s3_replicator.data_modeling.ContainerId", fake_container_id
+    )
 
-    view = {"space": "view_space", "externalId": "vx", "version": 1, "properties": {"p": 1}}
+    view = {
+        "space": "view_space",
+        "externalId": "vx",
+        "version": 1,
+        "properties": {"p": 1},
+    }
 
     replicator._node_query_for_view(view)
 
@@ -124,7 +159,9 @@ def test_node_query_uses_view_space_for_containerid(monkeypatch, replicator):
     assert seen["externalId"] == "vx"
 
 
-def test_edge_query_for_view_uses_view_space_for_containerid_when_anchor(monkeypatch, replicator):
+def test_edge_query_for_view_uses_view_space_for_containerid_when_anchor(
+    monkeypatch, replicator
+):
     seen = {}
 
     def fake_container_id(space, externalId):
@@ -132,9 +169,16 @@ def test_edge_query_for_view_uses_view_space_for_containerid_when_anchor(monkeyp
         seen["externalId"] = externalId
         return (space, externalId)
 
-    monkeypatch.setattr("cdf_s3_replicator.data_modeling.ContainerId", fake_container_id)
+    monkeypatch.setattr(
+        "cdf_s3_replicator.data_modeling.ContainerId", fake_container_id
+    )
 
-    view = {"space": "view_space", "externalId": "vx", "version": 3, "properties": {"p": 1}}
+    view = {
+        "space": "view_space",
+        "externalId": "vx",
+        "version": 3,
+        "properties": {"p": 1},
+    }
 
     replicator._edge_query_for_view(view)
 
@@ -150,7 +194,13 @@ def test_edge_query_for_view_node_anchor_builds_expected(replicator):
 
 
 def test_edge_query_for_view_edgeonly_builds_expected(replicator):
-    view = {"space": "vsp", "externalId": "edgeView", "version": 1, "properties": {"x": 1}, "usedFor": "edge"}
+    view = {
+        "space": "vsp",
+        "externalId": "edgeView",
+        "version": 1,
+        "properties": {"x": 1},
+        "usedFor": "edge",
+    }
     q = replicator._edge_query_for_view(view)
     assert "edges" in q.with_
     assert "edges" in q.select
@@ -160,18 +210,20 @@ def test_edge_query_for_view_edgeonly_builds_expected(replicator):
 # Core Processing Methods
 # -------------------------
 
+
 def test_process_instances_sets_expected_props_and_calls_iterate(replicator):
     """Test that _process_instances sets expected node props and calls iterate_and_write"""
     dm_cfg = SimpleNamespace(space="sp")
     view = {"space": "sp", "externalId": "v1", "version": 1, "properties": {"p1", "p2"}}
 
-    with patch.object(replicator, '_iterate_and_write') as mock_iterate:
-        with patch.object(replicator, '_node_query_for_view') as mock_query:
+    with patch.object(replicator, "_iterate_and_write") as mock_iterate:
+        with patch.object(replicator, "_node_query_for_view") as mock_query:
             replicator._process_instances(dm_cfg, "state_id", view, kind="nodes")
 
     assert replicator._expected_node_props == {"p1", "p2"}
     assert replicator._view_props_by_xid[("sp", "v1")] == {"p1", "p2"}
     assert mock_iterate.called
+    assert mock_query.called
 
 
 def test_replicate_view_processes_nodes_and_edges(replicator):
@@ -179,7 +231,7 @@ def test_replicate_view_processes_nodes_and_edges(replicator):
     dm_cfg = SimpleNamespace(space="sp")
     view = {"space": "sp", "externalId": "v1", "version": 1, "properties": {}}
 
-    with patch.object(replicator, '_process_instances') as mock_process:
+    with patch.object(replicator, "_process_instances") as mock_process:
         replicator._model_xid = "model1"
         replicator._model_version = "1"
         replicator.replicate_view(dm_cfg, "model1", "1", view)
@@ -190,21 +242,20 @@ def test_replicate_view_processes_nodes_and_edges(replicator):
     assert any("edges" in str(call) for call in calls)
 
 
-@patch.object(DataModelingReplicator, '_get_data_model_views')
-@patch.object(DataModelingReplicator, 'replicate_view')
+@patch.object(DataModelingReplicator, "_get_data_model_views")
+@patch.object(DataModelingReplicator, "replicate_view")
 def test_process_spaces(mock_replicate, mock_get_views, replicator):
     """Test process_spaces iterates through models and views"""
     replicator.stop_event = Mock()
     replicator.stop_event.is_set.return_value = False
 
     model = SimpleNamespace(external_id="m1", version=None, views=None)
-    dm_cfg = SimpleNamespace(
-        space="sp",
-        data_models=[model]
-    )
+    dm_cfg = SimpleNamespace(space="sp", data_models=[model])
     replicator.config = SimpleNamespace(data_modeling=[dm_cfg])
 
-    view1 = Mock(dump=Mock(return_value={"space": "sp", "externalId": "v1", "version": 1}))
+    view1 = Mock(
+        dump=Mock(return_value={"space": "sp", "externalId": "v1", "version": 1})
+    )
     mock_get_views.return_value = ("1", [view1])
 
     replicator.process_spaces()
@@ -219,7 +270,10 @@ def test_process_spaces(mock_replicate, mock_get_views, replicator):
 # Data Model Management
 # -------------------------
 
-def test_get_data_model_views_explicit_version_not_found_logs_and_empty(monkeypatch, replicator, caplog):
+
+def test_get_data_model_views_explicit_version_not_found_logs_and_empty(
+    monkeypatch, replicator, caplog
+):
     dm_cfg = SimpleNamespace(space="sp")
     model = SimpleNamespace(external_id="m", version=3, views=None)
 
@@ -236,9 +290,11 @@ def test_get_data_model_views_explicit_version_not_found_logs_and_empty(monkeypa
     assert "not found" in caplog.text.lower()
 
 
-def test_get_data_model_views_latest_version_and_subset_with_missing(monkeypatch, replicator, caplog):
+def test_get_data_model_views_latest_version_and_subset_with_missing(
+    monkeypatch, replicator, caplog
+):
     dm_cfg = SimpleNamespace(space="sp")
-    model = SimpleNamespace(external_id="m", version=None, views=["vA","vMissing"])
+    model = SimpleNamespace(external_id="m", version=None, views=["vA", "vMissing"])
 
     replicator.logger = logging.getLogger(replicator.name)
 
@@ -265,7 +321,9 @@ def test_get_data_model_views_latest_version_and_subset_with_missing(monkeypatch
     assert "not found" in caplog.text.lower()
 
 
-def test_get_data_model_views_explicit_version_no_views(monkeypatch, replicator, caplog):
+def test_get_data_model_views_explicit_version_no_views(
+    monkeypatch, replicator, caplog
+):
     dm_cfg = SimpleNamespace(space="sp")
     model = SimpleNamespace(external_id="m", version=2, views=None)
 
@@ -287,10 +345,13 @@ def test_get_data_model_views_explicit_version_no_views(monkeypatch, replicator,
 # Extract instances
 # -------------------------
 
+
 def test_extract_instances_nodes_and_edges_dirs(replicator):
     nodes = [mk_node(xid="n1", view_xid="A"), mk_node(xid="n2", view_xid="A")]
-    edges = [mk_edge(xid="e1", type_xid="edgeType"),
-             mk_edge(xid="e2", type_xid="edgeType")]
+    edges = [
+        mk_edge(xid="e1", type_xid="edgeType"),
+        mk_edge(xid="e2", type_xid="edgeType"),
+    ]
     edges_out = [mk_edge(xid="eo1"), mk_edge(xid="eo2")]
     edges_in = [mk_edge(xid="ei1"), mk_edge(xid="ei2")]
     res = SimpleNamespace(
@@ -316,6 +377,7 @@ def test_extract_instances_nodes_and_edges_dirs(replicator):
 # Sanitization & schema fallback
 # -------------------------
 
+
 def test_sanitize_rows_empty_input(replicator):
     """Test sanitization handles empty input"""
     assert replicator._sanitize_rows_for_tableau([]) == []
@@ -336,13 +398,9 @@ def test_widen_with_props_adds_missing_columns(replicator):
 
 def test_coerce_nulltype_fields_to_string(replicator):
     """Test that null type fields are converted to string type"""
-    schema = pa.schema([
-        ("good", pa.string()),
-        ("null_field", pa.null())
-    ])
+    schema = pa.schema([("good", pa.string()), ("null_field", pa.null())])
     tbl = pa.Table.from_arrays(
-        [pa.array(["val"]), pa.array([None], type=pa.null())],
-        schema=schema
+        [pa.array(["val"]), pa.array([None], type=pa.null())], schema=schema
     )
 
     result = replicator._coerce_nulltype_fields_to_string(tbl)
@@ -354,23 +412,22 @@ def test_coerce_nulltype_fields_to_string(replicator):
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
 def test_align_to_existing_schema(mock_dt_cls, replicator):
     """Test schema alignment with existing Delta table"""
-    existing_schema = pa.schema([
-        ("col1", pa.int64()),
-        ("col2", pa.string()),
-        ("col3", pa.float64())
-    ])
+    existing_schema = pa.schema(
+        [("col1", pa.int64()), ("col2", pa.string()), ("col3", pa.float64())]
+    )
 
     mock_dt = Mock()
     mock_dt.schema().to_pyarrow.return_value = existing_schema
     mock_dt_cls.return_value = mock_dt
 
-    input_schema = pa.schema([
-        ("col1", pa.string()),
-        ("col2", pa.string()),
-    ])
+    input_schema = pa.schema(
+        [
+            ("col1", pa.string()),
+            ("col2", pa.string()),
+        ]
+    )
     input_tbl = pa.Table.from_arrays(
-        [pa.array(["1"]), pa.array(["val"])],
-        schema=input_schema
+        [pa.array(["1"]), pa.array(["val"])], schema=input_schema
     )
 
     result = replicator._align_to_existing_schema("s3://bucket/table", input_tbl)
@@ -385,16 +442,26 @@ def test_align_to_existing_schema(mock_dt_cls, replicator):
 def test_sanitize_rows_for_tableau_mixed_types_and_structs(replicator):
     rows = [
         {
-            "space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
-            "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "x",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
             "a": {"k": "v"},
             "b": [1, 2, 3],
             "c": b"bytes",
             "d": 1,
         },
         {
-            "space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
-            "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "y",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
             "a": None,
             "b": None,
             "c": "text",
@@ -411,10 +478,25 @@ def test_sanitize_rows_for_tableau_mixed_types_and_structs(replicator):
 def test_sanitize_drops_columns_null_in_all_rows(replicator):
     """Test that sanitization doesn't drop columns that appear with null values"""
     rows = [
-        {"space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
-         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None},
-        {"space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
-         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None, "only_in_second": None},
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "x",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+        },
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "y",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+            "only_in_second": None,
+        },
     ]
     out = replicator._sanitize_rows_for_tableau(rows)
     assert "only_in_second" in out[1]
@@ -424,10 +506,26 @@ def test_sanitize_drops_columns_null_in_all_rows(replicator):
 def test_sanitize_handles_mixed_null_columns(replicator):
     """Test sanitization handles columns with mixed null presence"""
     rows = [
-        {"space": "sp", "instanceType": "node", "externalId": "x", "version": 1,
-         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None, "all_null": None},
-        {"space": "sp", "instanceType": "node", "externalId": "y", "version": 1,
-         "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None, "all_null": None},
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "x",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+            "all_null": None,
+        },
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "y",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+            "all_null": None,
+        },
     ]
     out = replicator._sanitize_rows_for_tableau(rows)
     assert all("all_null" not in r or r["all_null"] is None for r in out)
@@ -436,6 +534,7 @@ def test_sanitize_handles_mixed_null_columns(replicator):
 # -------------------------
 # Table Creation
 # -------------------------
+
 
 def test_create_empty_tables(replicator):
     """Test creation of empty tables with correct schemas"""
@@ -455,16 +554,31 @@ def test_create_empty_tables(replicator):
 # Delta Operations
 # -------------------------
 
-@patch.object(DataModelingReplicator, "_validate_tableau_schema", side_effect=ValueError("tableShouldFail"))
+
+@patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
+@patch.object(
+    DataModelingReplicator,
+    "_validate_tableau_schema",
+    side_effect=ValueError("tableShouldFail"),
+)
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-def test_delta_append_schema_fallback_to_safe_types(mock_write, _mock_validate, replicator, caplog):
+def test_delta_append_schema_fallback_to_safe_types(
+    mock_write, _mock_validate, _mock_verify, replicator, caplog
+):
     replicator._model_xid = "modelA"
     replicator._model_version = "2"
-    rows = [{
-        "space": "sp", "instanceType": "node", "externalId": "n1",
-        "version": 1, "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None,
-        "badcol": b"binarydata"
-    }]
+    rows = [
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "n1",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+            "badcol": b"binarydata",
+        }
+    ]
 
     replicator.logger = logging.getLogger(replicator.name)
 
@@ -478,14 +592,30 @@ def test_delta_append_schema_fallback_to_safe_types(mock_write, _mock_validate, 
 @patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-def test_delta_append_writes_and_tombstones(mock_write, mock_dt_cls, _mock_verify, replicator):
+def test_delta_append_writes_and_tombstones(
+    mock_write, mock_dt_cls, _mock_verify, replicator
+):
     replicator._model_xid = "modelA"
     replicator._model_version = "2"
     rows = [
-        {"space": "sp", "instanceType": "node", "externalId": "n1",
-         "version": 1, "lastUpdatedTime": 1, "createdTime": 1, "deletedTime": None},
-        {"space": "sp", "instanceType": "node", "externalId": "del_me",
-         "version": 1, "lastUpdatedTime": 2, "createdTime": 1, "deletedTime": 123},
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "n1",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+        },
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "del_me",
+            "version": 1,
+            "lastUpdatedTime": 2,
+            "createdTime": 1,
+            "deletedTime": 123,
+        },
     ]
     dt = Mock()
     mock_dt_cls.return_value = dt
@@ -503,13 +633,24 @@ def test_delta_append_writes_and_tombstones(mock_write, mock_dt_cls, _mock_verif
 
 @patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
-def test_delta_append_without_prefix_has_clean_uri(mock_write, _mock_verify, replicator):
+def test_delta_append_without_prefix_has_clean_uri(
+    mock_write, _mock_verify, replicator
+):
     replicator._model_xid = "m"
     replicator._model_version = "1"
     replicator.s3_cfg.prefix = None
 
-    rows = [{"space": "sp","instanceType":"node","externalId":"n1","version":1,
-             "lastUpdatedTime":1,"createdTime":1,"deletedTime":None}]
+    rows = [
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "n1",
+            "version": 1,
+            "lastUpdatedTime": 1,
+            "createdTime": 1,
+            "deletedTime": None,
+        }
+    ]
     replicator._delta_append("A/nodes", rows, "sp")
 
     uri = mock_write.call_args[0][0]
@@ -543,15 +684,13 @@ def test_delete_tombstones_chunks(replicator):
 # Iteration and Sync
 # -------------------------
 
+
 @patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
 def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
     replicator.state_store.get_state.return_value = (None, '{"a": "b"}')
     err = CogniteAPIError(message="cursor has expired", code=400)
     fake_node = SimpleNamespace(last_updated_time=1234567890)
-    second = SimpleNamespace(
-        data={"nodes": [fake_node]},
-        cursors={"next": 1}
-    )
+    second = SimpleNamespace(data={"nodes": [fake_node]}, cursors={"next": 1})
     replicator._safe_sync = Mock(
         side_effect=[
             err,
@@ -573,7 +712,9 @@ def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
 def test_iterate_and_write_cursor_expired_mid_pagination(mock_send, replicator):
     replicator.state_store.get_state.return_value = (None, None)
 
-    page1 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors={"c": 1})
+    page1 = SimpleNamespace(
+        data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors={"c": 1}
+    )
     err = CogniteAPIError(message="cursor has expired", code=400)
 
     replicator._safe_sync = Mock(side_effect=[page1, err])
@@ -603,18 +744,24 @@ def test_iterate_and_write_pagination_updates_state(mock_send, replicator):
     replicator._iterate_and_write(dm_cfg, "sid", q)
 
     assert mock_send.call_count == 1
-    replicator.state_store.set_state.assert_any_call(external_id="sid", high=json.dumps({"c": 1}))
+    replicator.state_store.set_state.assert_any_call(
+        external_id="sid", high=json.dumps({"c": 1})
+    )
 
 
 @patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
-def test_iterate_and_write_short_circuits_on_future_change(mock_send, replicator, monkeypatch):
+def test_iterate_and_write_short_circuits_on_future_change(
+    mock_send, replicator, monkeypatch
+):
     monkeypatch.setattr("time.time", lambda: 1000.0)  # query_start_ms = 1_000_000
 
     page1 = SimpleNamespace(
         data={"nodes": [SimpleNamespace(last_updated_time=1_000_000)]},
         cursors={"c": 1},
     )
-    page2 = SimpleNamespace(data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors=None)
+    page2 = SimpleNamespace(
+        data={"nodes": [SimpleNamespace(last_updated_time=0)]}, cursors=None
+    )
 
     replicator.state_store.get_state.return_value = (None, None)
     replicator._safe_sync = Mock(side_effect=[page1, page2])
@@ -645,11 +792,14 @@ def test_page_contains_future_change(replicator):
 # Snapshot Publishing
 # -------------------------
 
+
 @patch("cdf_s3_replicator.data_modeling.pq.write_table")
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
 @patch.object(DataModelingReplicator, "_atomic_replace_files")
 @patch.object(DataModelingReplicator, "_edge_folders_for_anchor", return_value=[])
-def test_write_view_snapshot_smoke(mock_edge_folders, mock_atomic, mock_delta, mock_write, replicator, tmp_path):
+def test_write_view_snapshot_smoke(
+    mock_edge_folders, mock_atomic, mock_delta, mock_write, replicator, tmp_path
+):
     replicator._model_xid = "m"
     replicator._model_version = "1"
 
@@ -688,9 +838,11 @@ def test_write_view_snapshot_edge_only(mock_atomic, mock_delta, mock_write, repl
 
 
 @patch("cdf_s3_replicator.data_modeling.pq.write_table")
-@patch.object(DataModelingReplicator, '_atomic_replace_files')
-@patch.object(DataModelingReplicator, '_get_data_model_views')
-def test_publish_space_snapshots_full_flow(mock_get_views, mock_atomic, mock_write, replicator):
+@patch.object(DataModelingReplicator, "_atomic_replace_files")
+@patch.object(DataModelingReplicator, "_get_data_model_views")
+def test_publish_space_snapshots_full_flow(
+    mock_get_views, mock_atomic, mock_write, replicator
+):
     """Test full snapshot publishing flow"""
     model = SimpleNamespace(external_id="m1", version=1, views=None)
     dm_cfg = SimpleNamespace(space="sp", data_models=[model])
@@ -698,7 +850,7 @@ def test_publish_space_snapshots_full_flow(mock_get_views, mock_atomic, mock_wri
     view = SimpleNamespace(external_id="v1", version=1, used_for="node")
     mock_get_views.return_value = ("1", [view])
 
-    with patch.object(replicator, '_write_view_snapshot') as mock_write_snapshot:
+    with patch.object(replicator, "_write_view_snapshot") as mock_write_snapshot:
         replicator._publish_space_snapshots(dm_cfg)
 
     assert mock_write_snapshot.called
@@ -707,27 +859,24 @@ def test_publish_space_snapshots_full_flow(mock_get_views, mock_atomic, mock_wri
 
 @patch("cdf_s3_replicator.data_modeling.DeltaTable")
 def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicator):
-    schema = pa.schema([
-        ("space", pa.string()),
-        ("externalId", pa.string()),
-        ("lastUpdatedTime", pa.int64()),
-    ])
+    schema = pa.schema(
+        [
+            ("space", pa.string()),
+            ("externalId", pa.string()),
+            ("lastUpdatedTime", pa.int64()),
+        ]
+    )
 
     b1 = pa.record_batch(
-        [pa.array(["s","s"]),
-         pa.array(["a","b"]),
-         pa.array([20, 5])],
-        schema=schema
+        [pa.array(["s", "s"]), pa.array(["a", "b"]), pa.array([20, 5])], schema=schema
     )
     b2 = pa.record_batch(
-        [pa.array(["s","s"]),
-         pa.array(["a","c"]),
-         pa.array([10, 7])],
-        schema=schema
+        [pa.array(["s", "s"]), pa.array(["a", "c"]), pa.array([10, 7])], schema=schema
     )
 
     class _FakeDataset:
-        def to_batches(self, *args, **kwargs): return [b1, b2]
+        def to_batches(self, *args, **kwargs):
+            return [b1, b2]
 
     fake_table = Mock()
     fake_table.to_pyarrow_dataset.return_value = _FakeDataset()
@@ -737,8 +886,12 @@ def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicato
 
     args, kwargs = mock_dt.call_args
     assert "storage_options" in kwargs
-    rows = set(zip(out.column("externalId").to_pylist(),
-                   out.column("lastUpdatedTime").to_pylist()))
+    rows = set(
+        zip(
+            out.column("externalId").to_pylist(),
+            out.column("lastUpdatedTime").to_pylist(),
+        )
+    )
     assert rows == {("a", 20), ("b", 5), ("c", 7)}
 
 
@@ -748,14 +901,16 @@ def test_dedup_latest_nodes_keeps_newest_per_space_externalid(mock_dt, replicato
 def test_init_sets_imds_disabled_in_dev(monkeypatch):
     monkeypatch.setenv("APP_ENV", "dev")
     monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
-    r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    DataModelingReplicator(metrics=Mock(), stop_event=Mock())
     assert os.getenv("AWS_EC2_METADATA_DISABLED") == "true"
+
 
 def test_init_unsets_imds_in_prod(monkeypatch):
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
-    r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
+    DataModelingReplicator(metrics=Mock(), stop_event=Mock())
     assert os.getenv("AWS_EC2_METADATA_DISABLED") is None
+
 
 def test_s3_storage_options_dev_includes_keys_prod_omits(monkeypatch):
     # shared env
@@ -786,14 +941,17 @@ def test_s3_storage_options_dev_includes_keys_prod_omits(monkeypatch):
 # Configuration Management
 # -------------------------
 
+
 def test_reload_remote_config_success(replicator):
     """Test successful remote config reload"""
     replicator.config = SimpleNamespace(
         cognite=Mock(),
-        destination=SimpleNamespace(s3=SimpleNamespace(bucket="new-bucket"))
+        destination=SimpleNamespace(s3=SimpleNamespace(bucket="new-bucket")),
     )
 
-    with patch('cdf_s3_replicator.data_modeling.CdfExtractorConfig.retrieve_pipeline_config') as mock_retrieve:
+    with patch(
+        "cdf_s3_replicator.data_modeling.CdfExtractorConfig.retrieve_pipeline_config"
+    ) as mock_retrieve:
         new_config = SimpleNamespace(
             destination=SimpleNamespace(s3=SimpleNamespace(bucket="updated-bucket"))
         )
@@ -809,17 +967,20 @@ def test_reload_remote_config_success(replicator):
 # Utility Functions
 # -------------------------
 
+
 def test_convert_to_safe_types_core_int_fields_bad_values_become_none(replicator):
-    rows = [{
-        "space": "sp",
-        "instanceType": "node",
-        "externalId": "x",
-        "version": "v1",
-        "lastUpdatedTime": "nope",
-        "createdTime": 123,
-        "deletedTime": None,
-        "someProp": {"a": 1},
-    }]
+    rows = [
+        {
+            "space": "sp",
+            "instanceType": "node",
+            "externalId": "x",
+            "version": "v1",
+            "lastUpdatedTime": "nope",
+            "createdTime": 123,
+            "deletedTime": None,
+            "someProp": {"a": 1},
+        }
+    ]
     tbl = replicator._convert_to_safe_types(rows)
     cols = {f.name: f.type for f in tbl.schema}
     assert str(cols["version"]) == "int64"

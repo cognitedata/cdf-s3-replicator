@@ -26,14 +26,14 @@ class ExtractorPipelineConfig:
 class DMModel:
     external_id: str
     views: list[str] | None = None
-    version: Optional[str] = None
+    version: int | str | None = None
 
 
 @dataclass
 class DataModelingConfig:
     space: str
     views: list[str] | None = None
-    data_models: list["DMModel"] | None = None
+    data_models: list[DMModel] | None = None
 
 
 @dataclass

@@ -36,7 +36,11 @@ def start_data_model_replicator(replicator: DataModelingReplicator) -> threading
     return worker
 
 
-def stop_data_model_replicator(replicator: DataModelingReplicator, worker: Optional[threading.Thread], timeout: float = 10.0) -> None:
+def stop_data_model_replicator(
+    replicator: DataModelingReplicator,
+    worker: Optional[threading.Thread],
+    timeout: float = 10.0,
+) -> None:
     """
     Signal the background replicator to stop and join the thread.
     Safe to call even if `worker` is None.

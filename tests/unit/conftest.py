@@ -2,6 +2,7 @@ import pytest
 from cognite.extractorutils.configtools import load_yaml
 from cdf_s3_replicator.config import Config
 
+
 @pytest.fixture(scope="session")
 def config_raw():
     yield """
@@ -47,6 +48,7 @@ def config_raw():
         prefix: pre
         region: us-east-1
     """
+
 
 @pytest.fixture(scope="session")
 def config(config_raw):
