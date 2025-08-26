@@ -6,33 +6,40 @@ on:
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
-    environment: 
+    environment:
       name: CI
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: 3.11
+        python-version: "3.11"
 
     - name: Install uv
       run: pip install uv
 
-    - name: install requirements
+    - name: Install dependencies
       run: uv sync --frozen
 
     - name: Run integration tests
       env:
+        APP_ENV: dev
         COGNITE_BASE_URL: ${{ vars.COGNITE_BASE_URL }}
         COGNITE_PROJECT: ${{ vars.COGNITE_PROJECT }}
         COGNITE_TOKEN_URL: ${{ vars.COGNITE_TOKEN_URL }}
         COGNITE_CLIENT_ID: ${{ vars.COGNITE_CLIENT_ID }}
         COGNITE_CLIENT_SECRET: ${{ secrets.COGNITE_CLIENT_SECRET }}
-        COGNITE_CLIENT_NAME: ${{ vars.COGNITE_CLIENT_NAME }}
-        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
         COGNITE_TOKEN_SCOPES: ${{ vars.COGNITE_TOKEN_SCOPES }}
+        COGNITE_STATE_DB: ${{ vars.COGNITE_STATE_DB }}
+        COGNITE_STATE_TABLE: ${{ vars.COGNITE_STATE_TABLE }}
+        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
+        AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+        AWS_REGION: ${{ vars.AWS_REGION }}
+        S3_PREFIX: ${{ vars.S3_PREFIX }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         TEST_CONFIG_PATH: tests/integration/test_config.yaml
 
-      run: uv run coverage run --source cdf_s3_extractor -m pytest -v tests/integration
+      run: uv run coverage run --source cdf_s3_replicator -m pytest -v tests/integration

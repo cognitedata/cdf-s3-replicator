@@ -49,7 +49,9 @@ def s3_table_name(table_name: str) -> str:
 
     bucket = os.getenv("AWS_S3_BUCKET", "").strip()
     if not bucket:
-        raise RuntimeError("Set S3_PREFIX (recommended) or AWS_S3_BUCKET in the environment.")
+        raise RuntimeError(
+            "Set S3_PREFIX (recommended) or AWS_S3_BUCKET in the environment."
+        )
     return f"s3://{bucket}/Tables/{table_name}"
 
 
@@ -60,12 +62,10 @@ def get_delta_table(_credential, s3_table_path: str) -> DeltaTable:
     """
     opts = _s3_storage_options()
 
-    last_err = None
     for attempt in range(6):
         try:
             return DeltaTable(s3_table_path, storage_options=opts)
-        except TableNotFoundError as e:
-            last_err = e
+        except TableNotFoundError:
             if attempt < 5:
                 time.sleep(1)
             else:
@@ -106,9 +106,7 @@ def prepare_s3_dataframe_for_comparison(
     return dataframe
 
 
-def write_tables_data_to_s3(
-    _credential, data_frame: DataFrame, table_path: str
-):
+def write_tables_data_to_s3(_credential, data_frame: DataFrame, table_path: str):
     """
     Append a pandas DataFrame to a Delta table at `table_path`.
     `_credential` is ignored (compat).
@@ -153,12 +151,8 @@ def assert_tables_data_in_s3(
     Assert time series data matches exactly between expected DataFrame and S3 Delta.
     `_credential` is ignored (compat).
     """
-    data_points_from_s3 = read_deltalake_tables(
-        tables_path, _credential
-    )
-    s3_dataframe = prepare_s3_dataframe_for_comparison(
-        data_points_from_s3, external_id
-    )
+    data_points_from_s3 = read_deltalake_tables(tables_path, _credential)
+    s3_dataframe = prepare_s3_dataframe_for_comparison(data_points_from_s3, external_id)
     test_dataframe = prepare_test_dataframe_for_comparison(data_points)
     assert_frame_equal(test_dataframe, s3_dataframe, check_dtype=False)
 
@@ -173,11 +167,12 @@ def assert_data_model_instances_in_s3(
 
     `path_to_expected` must be a mapping: { s3_uri -> expected_dataframe }.
     """
+
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         return (
             df.drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
-              .sort_index(axis=1)
-              .reset_index(drop=True)
+            .sort_index(axis=1)
+            .reset_index(drop=True)
         )
 
     for path, expected_df in path_to_expected.items():
@@ -190,9 +185,7 @@ def assert_data_model_instances_in_s3(
         assert_frame_equal(expected_norm, s3_norm, check_dtype=False)
 
 
-def assert_data_model_instances_update(
-    update_dataframe: tuple, _credential
-):
+def assert_data_model_instances_update(update_dataframe: tuple, _credential):
     """
     Assert that updated nodes (e.g., version bumps) are reflected in S3 Delta.
     `_credential` is ignored (compat). `update_dataframe` is (path, expected_df).
@@ -204,8 +197,8 @@ def assert_data_model_instances_update(
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         return (
             df.drop(columns=DATA_MODEL_TIMESTAMP_COLUMNS, errors="ignore")
-              .sort_index(axis=1)
-              .reset_index(drop=True)
+            .sort_index(axis=1)
+            .reset_index(drop=True)
         )
 
     expected_norm = _normalize(expected_df.copy())

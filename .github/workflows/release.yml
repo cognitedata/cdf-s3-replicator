@@ -1,4 +1,4 @@
-name: Release extractor
+name: Release replicator
 
 on:
   push:
@@ -19,18 +19,18 @@ jobs:
     needs:
       - builds
       - integration-tests
-    if: ${{ needs.build.outputs.should-release == 0 }}
+    if: ${{ needs.builds.outputs.should-release == 0 }}
     environment: CD
 
     steps:
-      - name: download-artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: docker image
+          name: docker-image
           path: ./
 
-      - name: load image
-        run: docker load -i s3-connector.tar
+      - name: Load image
+        run: docker load -i cdf-s3-replicator-${{ needs.builds.outputs.release-version }}-docker.tar
 
       - name: Login to docker hub
         uses: docker/login-action@v3
@@ -39,7 +39,10 @@ jobs:
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
       - name: Docker push to hub
-        run: docker push cognite/s3-connector:${{ needs.builds.outputs.release-version }}
+        run: |
+          docker tag cognite/cdf-s3-replicator:${{ needs.builds.outputs.release-version }} cognite/cdf-s3-replicator:latest
+          docker push cognite/cdf-s3-replicator:${{ needs.builds.outputs.release-version }}
+          docker push cognite/cdf-s3-replicator:latest
 
   publish-binaries:
     runs-on: ubuntu-latest
@@ -51,63 +54,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: windows
-          path: ./
-
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
           name: linux
           path: ./
 
-      - name: Debug
-        run: |
-          ls -l
-          ls -l ./
-
-      - name: create release
-        uses: actions/create-release@v1
-        id: github-release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          tag_name: v${{ needs.builds.outputs.release-version }}
-          release_name: Cognite File Extractor version ${{ needs.builds.outputs.release-version }}
-
-          draft: false
-          prerelease: false
-
-      - name: Upload to github releases
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            s3-connector-standalone-${{ needs.builds.outputs.release-version }}-win32.zip
-            s3-connector-winservice-${{ needs.builds.outputs.release-version }}-win32.zip
-            s3-connector-${{ needs.builds.outputs.release-version }}.msi
-            s3-connector-standalone-${{ needs.builds.outputs.release-version }}-linux.zip
+            cdf-s3-replicator-${{ needs.builds.outputs.release-version }}-linux.tar.gz
           tag_name: v${{ needs.builds.outputs.release-version }}
-          name: Release version ${{ needs.builds.outputs.release-version }}
+          name: CDF S3 Data Modeling Replicator v${{ needs.builds.outputs.release-version }}
           draft: false
           prerelease: false
-           
-      - name: Install publisher
-        shell: bash
-        run: pip install cognite-extractor-publisher --extra-index-url "https://${{ secrets.ARTIFACTORY_PUBLISH_TOKEN_USER }}:${{ secrets.ARTIFACTORY_PUBLISH_TOKEN }}@cognite.jfrog.io/cognite/api/pypi/snakepit/simple"
+          body: |
+            ## CDF S3 Data Modeling Replicator v${{ needs.builds.outputs.release-version }}
 
-      - name: publish extractor
-        env:
-          EXTRACTOR_DOWNLOAD_API_ADMIN_SECRET: ${{ secrets.EXTRACTOR_DOWNLOAD_ADMIN_SECRET }}
-        run: publish-extractor publish --manifest manifest.yml --version ${{ needs.builds.outputs.release-version }}
+            Stream CDF Data Modeling instances to AWS S3 in Delta Lake format.
 
-      - name: synchronize extractor
-        env:
-          EXTRACTOR_DOWNLOAD_API_ADMIN_SECRET: ${{ secrets.EXTRACTOR_DOWNLOAD_ADMIN_SECRET }}
-        run: publish-extractor sync --manifest manifest.yml
+            ### What's Changed
+            See [CHANGELOG.md](https://github.com/cognitedata/cdf-s3-replicator/blob/main/CHANGELOG.md) for details.
+
+            ### Installation
+            - **Docker**: `docker pull cognite/cdf-s3-replicator:${{ needs.builds.outputs.release-version }}`
+            - **Linux**: Download the tarball below
+
+            ### Documentation
+            - [README](https://github.com/cognitedata/cdf-s3-replicator#readme)
+            - [AWS Deployment Guide](https://github.com/cognitedata/cdf-s3-replicator/blob/main/docs/AWS_DEPLOYMENT.md)

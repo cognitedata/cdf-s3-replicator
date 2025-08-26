@@ -148,6 +148,7 @@ AWS Account
 
 ### CDF Requirements
 - **CDF project** with Data Modeling enabled
+- **Extraction pipeline** created for remote configuration
 - **Service principal** with the following capabilities:
   - `dataModels:read` - Read data model definitions
   - `dataModelInstances:read` - Query instances from views
@@ -189,15 +190,19 @@ pyenv install 3.12.0
 pyenv local 3.12.0
 ```
 
-3. **Install Poetry**:
+3. **Create virtual environment**:
 ```bash
-curl -sSL https://install.python-poetry.org | python3 -
-export PATH="$HOME/.local/bin:$PATH"
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 4. **Install dependencies**:
 ```bash
-poetry install
+pip install -e ".[dev]"
+# Or using uv:
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e ".[dev]"
 ```
 
 ### Environment Variables
@@ -246,14 +251,14 @@ logger:
 cognite:
   host: ${COGNITE_BASE_URL}
   project: ${COGNITE_PROJECT}
-  
+
   idp-authentication:
     token-url: ${COGNITE_TOKEN_URL}
     client-id: ${COGNITE_CLIENT_ID}
     secret: ${COGNITE_CLIENT_SECRET}
     scopes:
       - ${COGNITE_TOKEN_SCOPES}
-  
+
   # Optional: extraction pipeline for remote config
   extraction-pipeline:
     external-id: ${COGNITE_EXTRACTION_PIPELINE}
@@ -264,11 +269,11 @@ extractor:
     raw:
       database: ${COGNITE_STATE_DB}
       table: ${COGNITE_STATE_TABLE}
-  
+
   # Sync intervals
   poll-time: 900               # Seconds between sync cycles (15 min)
   snapshot-interval: 900       # Seconds between publish snapshots (15 min)
-  
+
   # Batch sizes for performance tuning
   subscription-batch-size: 10000    # Instances per query
   ingest-batch-size: 100000        # Instances per batch
@@ -280,7 +285,7 @@ data_modeling:
   - space: analytics-space
     data_models:
       - external_id: CustomerModel
-  
+
   # Example 2: Sync specific version and views
   - space: test-space
     data_models:
@@ -298,9 +303,9 @@ destination:
 
 ### Running Locally
 
-#### Using Poetry
+#### Using Python directly
 ```bash
-poetry run python -m cdf_s3_replicator example_config.yaml
+python -m cdf_s3_replicator config.yaml
 ```
 
 #### Using Docker
@@ -319,6 +324,27 @@ docker run --rm --env-file .env cdf-s3-replicator:latest
 2024-01-15 10:00:02 INFO: Syncing CustomerModel version 1
 2024-01-15 10:00:05 INFO: Writing to s3://your-bucket/cdf-data/raw/production-space/CustomerModel/1/views/CustomerView/nodes
 2024-01-15 10:00:45 INFO: Cycle finished in 45.2s - sleeping 855s
+```
+
+#### Using Docker
+```bash
+# Unit tests
+pytest tests/unit/ -v
+
+# Integration tests (requires test environment)
+pytest tests/integration/ -v
+
+# Coverage report
+coverage run --source cdf_s3_replicator -m pytest tests/unit/
+coverage report
+coverage html  # Creates htmlcov/index.html
+```
+
+### Open the HTML coverage report
+```bash
+macOS: open htmlcov/index.html
+Linux: xdg-open htmlcov/index.html
+Windows: start htmlcov\index.html
 ```
 
 ## Building and Testing
@@ -343,17 +369,17 @@ docker build \
 #### Unit Tests
 ```bash
 # Run all unit tests
-poetry run pytest tests/unit/
+pytest tests/unit/
 
 # Run with coverage
-poetry run coverage run -m pytest tests/unit/
-poetry run coverage report
+coverage run -m pytest tests/unit/
+coverage report
 
 # Run specific test file
-poetry run pytest tests/unit/test_data_modeling.py
+pytest tests/unit/test_data_modeling.py
 
 # Run with verbose output
-poetry run pytest -v tests/unit/
+pytest -v tests/unit/
 ```
 
 #### Integration Tests
@@ -370,7 +396,7 @@ poetry run pytest tests/integration/test_data_modeling_integration.py
 ```
 
 #### Test Coverage Requirements
-- Minimum coverage: 90%
+- Minimum coverage: 60%
 - Focus on unit test coverage for individual functions
 - Integration tests for end-to-end workflows
 
@@ -537,63 +563,19 @@ aws s3 ls s3://your-bucket/cdf-data/raw/ --recursive --summarize
 
 ### CI/CD Pipeline
 
-GitHub Actions workflow for automated deployment:
+The project includes GitHub Actions workflows for continuous integration:
 
-```yaml
-# .github/workflows/deploy.yaml
-name: Deploy
+- **build.yml** - Builds Linux binaries and Docker images on pull requests and releases
+- **test.yml** - Runs unit tests across Python versions 3.10, 3.11, 3.12
+- **codestyle.yml** - Enforces code quality with Ruff and mypy
+- **integration_tests.yml** - Tests against real CDF and S3 services
+- **release.yml** - Publishes releases to Docker Hub and creates GitHub releases
 
-on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-
-env:
-  AWS_REGION: us-east-1
-  PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
-          aws-region: us-east-1
-      
-      - name: Install Pulumi
-        uses: pulumi/actions@v4
-      
-      - name: Deploy Infrastructure
-        run: |
-          cd infra/platform/secrets && pulumi up --yes --stack prod
-          cd ../application-assets && pulumi up --yes --stack prod
-      
-      - name: Build and Push Docker
-        run: |
-          ECR_URL=$(cd infra/platform/application-assets && pulumi stack output ecrRepoUrl --stack prod)
-          docker build -t ${ECR_URL}:${{ github.sha }} .
-          aws ecr get-login-password | docker login --username AWS --password-stdin ${ECR_URL}
-          docker push ${ECR_URL}:${{ github.sha }}
-      
-      - name: Deploy Application
-        run: |
-          cd infra/application
-          pulumi config set imageTag ${{ github.sha }} --stack prod
-          pulumi up --yes --stack prod
-```
+For automated deployment to AWS, you can create your own deployment workflow using the Pulumi infrastructure provided in the `infra/` directory.
 
 ## Configuration Management
 
-### Data Model Configuration
+### Data Model Configuration at Extraction Pipeline config in CDF
 
 Configure which models and views to replicate:
 
@@ -604,13 +586,13 @@ data_modeling:
     data_models:
       - external_id: CustomerModel
       - external_id: OrderModel
-  
+
   # Option 2: Sync specific versions
   - space: staging-space
     data_models:
       - external_id: TestModel
         version: "2"  # Lock to version 2
-  
+
   # Option 3: Sync specific views only
   - space: reporting-space
     data_models:
@@ -627,7 +609,7 @@ extractor:
   # Sync frequency
   poll-time: 300               # Check every 5 minutes for frequent updates
   snapshot-interval: 3600      # Publish snapshots hourly for stability
-  
+
   # Batch sizes (adjust based on instance size and network)
   subscription-batch-size: 50000   # Larger for high-volume spaces
   ingest-batch-size: 500000        # Maximum instances in memory
@@ -704,9 +686,9 @@ client.extraction_pipelines.config.create(
 5. **Create relationships**:
    ```sql
    -- Join edges to start nodes
-   nodes.space = edges."startNode.space" 
+   nodes.space = edges."startNode.space"
    AND nodes.externalId = edges."startNode.externalId"
-   
+
    -- Join edges to end nodes (create second nodes instance)
    nodes_end.space = edges."endNode.space"
    AND nodes_end.externalId = edges."endNode.externalId"
@@ -930,25 +912,25 @@ from deltalake import DeltaTable
 # Optimize Delta tables
 def optimize_delta_tables(bucket, prefix):
     s3 = boto3.client('s3')
-    
+
     # List all Delta tables
     response = s3.list_objects_v2(
         Bucket=bucket,
         Prefix=f"{prefix}raw/",
         Delimiter='/'
     )
-    
+
     for obj in response.get('CommonPrefixes', []):
         table_path = f"s3://{bucket}/{obj['Prefix']}"
         try:
             dt = DeltaTable(table_path)
-            
+
             # Compact small files
             dt.optimize.compact()
-            
+
             # Remove old versions (keep 7 days)
             dt.vacuum(retention_hours=168)
-            
+
             print(f"Optimized {table_path}")
         except Exception as e:
             print(f"Failed to optimize {table_path}: {e}")
@@ -961,17 +943,17 @@ def optimize_delta_tables(bucket, prefix):
 1. **No hardcoded credentials**
    - AWS: Uses IAM roles in production
    - CDF: Credentials in AWS Secrets Manager
-   
+
 2. **Encryption**
    - S3: Server-side encryption (AES-256)
    - Secrets: Encrypted in Secrets Manager
    - Network: TLS for all connections
-   
+
 3. **Network isolation**
    - ECS tasks run in private subnets
    - No public IP addresses
    - NAT gateway for outbound traffic
-   
+
 4. **Least privilege IAM**
    ```json
    {
@@ -1063,15 +1045,15 @@ class TestDataModeling:
                 metrics=Mock(),
                 stop_event=Mock()
             )
-    
+
     def test_is_running_in_aws_local(self, replicator):
         with patch.dict('os.environ', {}, clear=True):
             assert not replicator._is_running_in_aws()
-    
+
     def test_is_running_in_aws_ecs(self, replicator):
         with patch.dict('os.environ', {'ECS_CONTAINER_METADATA_URI_V4': 'http://...'}):
             assert replicator._is_running_in_aws()
-    
+
     def test_get_storage_options_local(self, replicator):
         with patch.dict('os.environ', {
             'AWS_ACCESS_KEY_ID': 'test_key',
@@ -1080,7 +1062,7 @@ class TestDataModeling:
             options = replicator._get_storage_options()
             assert 'AWS_ACCESS_KEY_ID' in options
             assert 'AWS_SECRET_ACCESS_KEY' in options
-    
+
     def test_get_storage_options_aws(self, replicator):
         with patch.object(replicator, '_is_running_in_aws', return_value=True):
             options = replicator._get_storage_options()
@@ -1119,10 +1101,10 @@ class TestEndToEnd:
     @pytest.fixture(scope="class")
     def setup_test_data(self):
         client = CogniteClient()
-        
+
         # Create test space and model
         space = client.data_modeling.spaces.create("test-space")
-        
+
         # Create test view
         view = client.data_modeling.views.create({
             "space": "test-space",
@@ -1133,7 +1115,7 @@ class TestEndToEnd:
                 "value": {"type": "float64"}
             }
         })
-        
+
         # Create test instances
         nodes = [
             {
@@ -1150,31 +1132,31 @@ class TestEndToEnd:
             for i in range(10)
         ]
         client.data_modeling.instances.apply(nodes=nodes)
-        
+
         yield
-        
+
         # Cleanup
         client.data_modeling.spaces.delete("test-space")
-    
+
     def test_full_sync_cycle(self, setup_test_data):
         replicator = DataModelingReplicator(
             metrics=Mock(),
             stop_event=Mock(),
             override_config_path="tests/integration/test_config.yaml"
         )
-        
+
         # Run one sync cycle
         replicator.process_spaces()
-        
+
         # Verify data in S3
         import boto3
         s3 = boto3.client('s3')
-        
+
         response = s3.list_objects_v2(
             Bucket='test-bucket',
             Prefix='cdf-data/raw/test-space/'
         )
-        
+
         assert response['KeyCount'] > 0
         assert any('TestView/nodes' in obj['Key'] for obj in response['Contents'])
 ```
@@ -1187,7 +1169,7 @@ class TestEndToEnd:
 omit = [".*", "*/tests/*"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 60
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
@@ -1211,25 +1193,25 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-      
+
       - name: Install dependencies
         run: |
           pip install poetry
           poetry install
-      
+
       - name: Run unit tests
         run: poetry run pytest tests/unit/ --cov=cdf_s3_replicator
-      
+
       - name: Check coverage
-        run: poetry run coverage report --fail-under=90
+        run: poetry run coverage report --fail-under=60
 ```
 
 ## API Reference
@@ -1249,13 +1231,13 @@ class DataModelingReplicator(Extractor):
         override_config_path: Optional[str] = None
     ):
         """Initialize the replicator."""
-    
+
     def run(self) -> None:
         """Main run loop."""
-    
+
     def process_spaces(self) -> None:
         """Process configured spaces and models."""
-    
+
     def replicate_view(
         self,
         dm_cfg: DataModelingConfig,

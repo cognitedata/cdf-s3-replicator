@@ -4,36 +4,43 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
 jobs:
   run-tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     environment:
       name: CI
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
-        python-version: 3.11
+        python-version: ${{ matrix.python-version }}
 
-    - name: Install u
+    - name: Install uv
       run: pip install uv
 
-    - name: install requirements
+    - name: Install dependencies
       run: uv sync --frozen
 
-    - name: Run tests
-      env:
-        COGNITE_BASE_URL: ${{ vars.COGNITE_BASE_URL }}
-        COGNITE_PROJECT: ${{ vars.COGNITE_PROJECT }}
-        COGNITE_TOKEN_URL: ${{ vars.COGNITE_TOKEN_URL }}
-        COGNITE_CLIENT_ID: ${{ vars.COGNITE_CLIENT_ID }}
-        COGNITE_CLIENT_SECRET: ${{ secrets.COGNITE_CLIENT_SECRET }}
-        COGNITE_CLIENT_NAME: ${{ vars.COGNITE_CLIENT_NAME }}
-        COGNITE_EXTRACTION_PIPELINE: ${{ vars.COGNITE_EXTRACTION_PIPELINE }}
-        COGNITE_TOKEN_SCOPES: ${{ vars.COGNITE_TOKEN_SCOPES }}
-        TEST_CONFIG_PATH: tests/integration/test_config.yaml
+    - name: Run unit tests with coverage
+      run: uv run coverage run --source cdf_s3_replicator -m pytest -v tests/unit
 
-      run: uv run coverage run --source cdf_s3_extractor -m pytest -v tests/unit
+    - name: Generate coverage report
+      run: uv run coverage report --fail-under=90
+
+    - name: Generate coverage HTML
+      if: matrix.python-version == '3.11'
+      run: uv run coverage html
+
+    - name: Upload coverage reports
+      if: matrix.python-version == '3.11'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: htmlcov/

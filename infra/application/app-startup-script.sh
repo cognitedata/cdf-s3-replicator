@@ -9,7 +9,7 @@ yum update -y
 
 # Install Docker and start it.
 echo "Installing docker and starting it."
-yum -y install docker 
+yum -y install docker
 systemctl start docker
 systemctl enable docker
 usermod -a -G docker ec2-user

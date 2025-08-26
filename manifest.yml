@@ -38,9 +38,9 @@ extractor:
   name: CDF S3 Data Modeling Replicator
   description: Stream CDF Data Modeling instances to AWS S3 in Delta Lake format for analytics.
   documentation: |
-    The CDF S3 Data Modeling Replicator streams data from Cognite Data Fusion (CDF) Data Modeling 
+    The CDF S3 Data Modeling Replicator streams data from Cognite Data Fusion (CDF) Data Modeling
     instances to Amazon S3 in Delta Lake format, optimized for analytics and BI tools.
-    
+
     ## Key Features:
     * **Incremental Sync** - Efficiently syncs only changed data using cursor-based change detection
     * **Automatic Recovery** - Handles cursor expiration and connection issues gracefully
@@ -49,17 +49,17 @@ extractor:
     * **Schema Evolution** - Automatic handling of schema changes without data loss
     * **AWS Native** - Uses IAM roles for secure credential-free S3 access
     * **Remote Configuration** - Configure via CDF extraction pipelines
-    
+
     ## Architecture:
     The replicator creates two data layers in S3:
     * **Raw Layer** (Delta Lake) - Incremental updates with full history at `raw/<space>/<model>/<version>/views/`
     * **Publish Layer** (Parquet) - Deduplicated snapshots for BI at `publish/<space>/<model>/<version>/<view>/`
-    
+
     ## Deployment:
     * **Local** - Run with Poetry or Docker for development
     * **AWS** - Deploy to ECS Fargate with Pulumi infrastructure-as-code
     * **Authentication** - Automatic IAM role detection in AWS, explicit credentials for local development
-    
+
     ## Supported BI Tools:
     * Tableau Desktop
     * Power BI

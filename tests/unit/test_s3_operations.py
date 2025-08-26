@@ -2,18 +2,24 @@ from types import SimpleNamespace
 
 import pytest
 from unittest.mock import patch, Mock
-from datetime import datetime, timedelta, UTC
-
+from datetime import datetime, timedelta, timezone
 from cdf_s3_replicator.data_modeling import DataModelingReplicator
+
+UTC = timezone.utc
 
 
 @pytest.fixture
 def test_replicator():
     """Create a bare replicator instance with minimal wiring."""
-    with patch('cdf_s3_replicator.data_modeling.DataModelingReplicator.__init__', lambda self, *a, **k: None):
+    with patch(
+        "cdf_s3_replicator.data_modeling.DataModelingReplicator.__init__",
+        lambda self, *a, **k: None,
+    ):
         r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
         r.logger = Mock()
-        r.s3_cfg = SimpleNamespace(bucket="test-bucket", prefix="pre", region="us-east-1")
+        r.s3_cfg = SimpleNamespace(
+            bucket="test-bucket", prefix="pre", region="us-east-1"
+        )
         r.config = SimpleNamespace(destination=SimpleNamespace(s3=r.s3_cfg))
         r.state_store = Mock()
         r.cognite_client = Mock()
@@ -27,7 +33,6 @@ def test_replicator():
 
 
 class TestS3Operations:
-
     def test_ensure_s3_creates_and_renews(self, test_replicator):
         """_ensure_s3 uses _make_s3_client and renews after ~50 minutes."""
         c1, c2 = object(), object()
@@ -41,7 +46,9 @@ class TestS3Operations:
         test_replicator._s3 = None
         test_replicator._s3_created_at = None
 
-        with patch.object(DataModelingReplicator, "_make_s3_client", side_effect=fake_make):
+        with patch.object(
+            DataModelingReplicator, "_make_s3_client", side_effect=fake_make
+        ):
             test_replicator._ensure_s3()
             assert test_replicator._s3 is c1
             assert isinstance(test_replicator._s3_created_at, datetime)
@@ -62,16 +69,24 @@ class TestS3Operations:
         test_replicator._s3 = s3
         test_replicator._s3_created_at = datetime.now(UTC)
         updates = [
-            ('s3://test-bucket/tmp_file.parquet', 's3://test-bucket/final_file.parquet', 'nodes')
+            (
+                "s3://test-bucket/tmp_file.parquet",
+                "s3://test-bucket/final_file.parquet",
+                "nodes",
+            )
         ]
 
-        with patch.object(DataModelingReplicator, "_copy_and_verify", return_value=None) as mock_copy:
+        with patch.object(
+            DataModelingReplicator, "_copy_and_verify", return_value=None
+        ) as mock_copy:
             test_replicator._atomic_replace_files(updates)
 
         mock_copy.assert_called_once_with(
             "test-bucket", "tmp_file.parquet", "test-bucket", "final_file.parquet"
         )
-        s3.delete_object.assert_called_once_with(Bucket="test-bucket", Key="tmp_file.parquet")
+        s3.delete_object.assert_called_once_with(
+            Bucket="test-bucket", Key="tmp_file.parquet"
+        )
 
     def test_atomic_replace_files_cleanup_on_failure(self, test_replicator):
         """If copy fails, temps are still cleaned up."""
@@ -80,16 +95,31 @@ class TestS3Operations:
         test_replicator._s3_created_at = datetime.now(UTC)
 
         updates = [
-            ('s3://test-bucket/tmp1.parquet', 's3://test-bucket/final1.parquet', 'edges'),
-            ('s3://test-bucket/tmp2.parquet', 's3://test-bucket/final2.parquet', 'nodes'),
+            (
+                "s3://test-bucket/tmp1.parquet",
+                "s3://test-bucket/final1.parquet",
+                "edges",
+            ),
+            (
+                "s3://test-bucket/tmp2.parquet",
+                "s3://test-bucket/final2.parquet",
+                "nodes",
+            ),
         ]
 
-        with patch.object(DataModelingReplicator, "_copy_and_verify", side_effect=RuntimeError("boom")):
+        with patch.object(
+            DataModelingReplicator, "_copy_and_verify", side_effect=RuntimeError("boom")
+        ):
             with pytest.raises(RuntimeError, match="boom"):
                 test_replicator._atomic_replace_files(updates)
 
-        deleted = {(kw["Bucket"], kw["Key"]) for _, kw in s3.delete_object.call_args_list}
-        assert deleted == {("test-bucket", "tmp1.parquet"), ("test-bucket", "tmp2.parquet")}
+        deleted = {
+            (kw["Bucket"], kw["Key"]) for _, kw in s3.delete_object.call_args_list
+        }
+        assert deleted == {
+            ("test-bucket", "tmp1.parquet"),
+            ("test-bucket", "tmp2.parquet"),
+        }
 
     def test_cleanup_temp_files_mock(self, test_replicator):
         """
@@ -146,7 +176,9 @@ class TestS3Operations:
         with pytest.raises(RuntimeError):
             test_replicator._get_s3_prefix("space", "raw")
 
-    def test_ensure_s3_recreates_client_after_50_minutes(self, monkeypatch, test_replicator):
+    def test_ensure_s3_recreates_client_after_50_minutes(
+        self, monkeypatch, test_replicator
+    ):
         first = object()
         second = object()
 
@@ -156,7 +188,9 @@ class TestS3Operations:
             calls["n"] += 1
             return first if calls["n"] == 1 else second
 
-        monkeypatch.setattr(DataModelingReplicator, "_make_s3_client", lambda self: fake_make())
+        monkeypatch.setattr(
+            DataModelingReplicator, "_make_s3_client", lambda self: fake_make()
+        )
 
         test_replicator._s3 = None
         test_replicator._s3_created_at = None
@@ -168,7 +202,9 @@ class TestS3Operations:
         assert test_replicator._s3 is second
 
     @patch.object(DataModelingReplicator, "_list_prefixes")
-    def test_edge_folders_for_anchor_filters_correctly(self, mock_list, test_replicator):
+    def test_edge_folders_for_anchor_filters_correctly(
+        self, mock_list, test_replicator
+    ):
         test_replicator._model_xid = "m"
         test_replicator._model_version = "1"
         test_replicator.s3_cfg = SimpleNamespace(bucket="test-bucket", prefix="pre")
@@ -185,7 +221,9 @@ class TestS3Operations:
         assert any("A.something/edges" in x for x in out)
         assert all("B/edges" not in x for x in out)
 
-    def test_atomic_replace_files_cleans_temps_on_failure(self, test_replicator, monkeypatch):
+    def test_atomic_replace_files_cleans_temps_on_failure(
+        self, test_replicator, monkeypatch
+    ):
         updates = [
             ("s3://bkt/tmp1.parquet", "s3://bkt/final1.parquet", "edges"),
             ("s3://bkt/tmp2.parquet", "s3://bkt/final2.parquet", "nodes"),
@@ -197,8 +235,11 @@ class TestS3Operations:
         def fail_intentionally(*a, **k):
             raise RuntimeError("copy failed")
 
-        monkeypatch.setattr(DataModelingReplicator, "_copy_and_verify",
-                            lambda *a, **k: fail_intentionally())
+        monkeypatch.setattr(
+            DataModelingReplicator,
+            "_copy_and_verify",
+            lambda *a, **k: fail_intentionally(),
+        )
 
         with pytest.raises(RuntimeError, match="copy failed"):
             test_replicator._atomic_replace_files(updates)
@@ -207,14 +248,11 @@ class TestS3Operations:
         assert keys == {"tmp1.parquet", "tmp2.parquet"}
         assert s3.delete_object.call_count == 2
 
-    @patch.object(DataModelingReplicator, '_delta_append')
-    @patch.object(DataModelingReplicator, '_extract_instances')
+    @patch.object(DataModelingReplicator, "_delta_append")
+    @patch.object(DataModelingReplicator, "_extract_instances")
     def test_send_to_s3(self, mock_extract, mock_append, test_replicator):
         """Test that _send_to_s3 extracts and appends data"""
-        mock_extract.return_value = {
-            "table1": [{"data": 1}],
-            "table2": [{"data": 2}]
-        }
+        mock_extract.return_value = {"table1": [{"data": 1}], "table2": [{"data": 2}]}
         dm_cfg = SimpleNamespace(space="sp")
         result = Mock()
 

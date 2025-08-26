@@ -166,3 +166,5 @@ cython_debug/
 states.json
 
 debug.log.*
+
+htmlcov/
