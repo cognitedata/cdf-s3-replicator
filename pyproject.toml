@@ -35,6 +35,8 @@ dev = [
     "pyinstaller>=6.11.1",
     "types-PyYAML",
     "types-requests",
+    "black>=24.0.0,<25.0.0",
+    "isort>=5.13,<6.0",
 ]
 
 [build-system]

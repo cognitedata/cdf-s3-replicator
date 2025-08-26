@@ -186,7 +186,7 @@ jobs:
           mkdir -p cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux
           cp dist/cdf-s3-replicator-${{ needs.create-version.outputs.version }} cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
           cp example_config.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/ || true
-          cp config.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/config.yaml.example || true
+          cp example_config.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/config.yaml.example || true
           cp manifest.spdx.json* cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
           tar -czf cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux.tar.gz cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
 
@@ -216,6 +216,12 @@ jobs:
       uses: docker/setup-buildx-action@v3
       with:
         install: true
+
+    - name: Install uv (for lock refresh)
+      run: pip install uv
+
+    - name: Create uv.lock for Docker
+      run: uv lock
 
     - name: Build Docker image
       run: docker build -t cognite/cdf-s3-replicator:${{ needs.create-version.outputs.version }} -f build/Dockerfile --load .
