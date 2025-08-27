@@ -1,47 +1,47 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "poetry install",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "poetry",
-            "args": [
-                "-vvv",
-                "install"
-            ]
-        },
-        {
-            "name": "poetry run",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "cdf_s3_replicator",
-            "args": [
-                "example_config.yaml"
-            ]
-        },
-        {
-            "name": "poetry test coverage",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "poetry",
-            "args": [
-                "run",
-                "coverage",
-                "run",
-                "-m",
-                "pytest",
-                "${input:testPath}"
-            ],
-            "postDebugTask": "Generate Coverage Report"
-        }
-    ],
-    "inputs": [
-        {
-            "id": "testPath",
-            "type": "pickString",
-            "options": ["tests/unit", "tests/integration", "tests"],
-            "description": "Select the test path"
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "uv install",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uv",
+      "args": [
+        "pip",
+        "install",
+        "-e",
+        ".[dev]"
+      ]
+    },
+    {
+      "name": "uv run",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "cdf_s3_replicator",
+      "args": [
+        "local_config_example.yaml"
+      ]
+    },
+    {
+      "name": "uv test coverage",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "coverage",
+      "args": [
+        "run",
+        "-m",
+        "pytest",
+        "${input:testPath}"
+      ],
+      "postDebugTask": "Generate Coverage Report"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "testPath",
+      "type": "pickString",
+      "options": ["tests/unit", "tests/integration", "tests"],
+      "description": "Select the test path"
+    }
+  ]
 }

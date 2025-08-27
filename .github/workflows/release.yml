@@ -57,7 +57,7 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
-          name: linux
+          name: linux-binary
           path: ./
 
       - name: Create release
@@ -79,8 +79,7 @@ jobs:
 
             ### Installation
             - **Docker**: `docker pull cognite/cdf-s3-replicator:${{ needs.builds.outputs.release-version }}`
-            - **Linux**: Download the tarball below
+            - **Linux binary**: Download the tarball below
 
             ### Documentation
             - [README](https://github.com/cognitedata/cdf-s3-replicator#readme)
-            - [AWS Deployment Guide](https://github.com/cognitedata/cdf-s3-replicator/blob/main/docs/AWS_DEPLOYMENT.md)

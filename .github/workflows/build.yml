@@ -185,8 +185,8 @@ jobs:
         run: |
           mkdir -p cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux
           cp dist/cdf-s3-replicator-${{ needs.create-version.outputs.version }} cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
-          cp example_config.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/ || true
-          cp example_config.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/config.yaml.example || true
+          cp local_config_example.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/ || true
+          cp local_config_example.yaml cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/config.yaml.example || true
           cp manifest.spdx.json* cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
           tar -czf cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux.tar.gz cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux/
 
@@ -194,7 +194,7 @@ jobs:
         if: ${{ needs.current-branch.outputs.current-branch == 'main' && needs.should-release.outputs.should-release == 0}}
         uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: linux-binary
           path: cdf-s3-replicator-${{ needs.create-version.outputs.version }}-linux.tar.gz
 
   build-docker-image:
