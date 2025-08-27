@@ -1,0 +1,32 @@
+logger:
+  console:
+    level: INFO
+
+extractor:
+  state-store:
+    raw:
+      database: ${COGNITE_STATE_DB}
+      table: ${COGNITE_STATE_TABLE}
+  subscription-batch-size: 10000
+  ingest-batch-size:       100000
+  poll-time:               900
+  snapshot-interval: 900
+
+data_modeling:
+  - space: dm-space-example1
+    data_models:
+      - external_id: dm-external-id1
+        views: [view-external-id1, view-external-id2]
+      - external_id: dm-external-id2
+        views: [view-external-id1]
+
+  - space: dm-space-example2
+    data_models:
+      - external_id: dm-external-id1
+        views: [view-external-id1]
+
+destination:
+  s3:
+    bucket:  ${AWS_S3_BUCKET}
+    prefix:  ${S3_PREFIX}
+    region:  ${AWS_REGION}

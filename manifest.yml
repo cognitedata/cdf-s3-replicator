@@ -56,7 +56,7 @@ extractor:
     * **Publish Layer** (Parquet) - Deduplicated snapshots for BI at `publish/<space>/<model>/<version>/<view>/`
 
     ## Deployment:
-    * **Local** - Run with Poetry or Docker for development
+    * **Local** - Run with uv or Docker for development
     * **AWS** - Deploy to ECS Fargate with Pulumi infrastructure-as-code
     * **Authentication** - Automatic IAM role detection in AWS, explicit credentials for local development
 

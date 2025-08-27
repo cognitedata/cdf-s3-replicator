@@ -164,7 +164,7 @@ AWS Account
 
 ### Local Development Requirements
 - **Python** 3.10, 3.11, or 3.12
-- **Poetry** for dependency management
+- **uv** for dependency management
 - **Docker** for containerization
 - **AWS CLI** configured with credentials
 
@@ -389,10 +389,10 @@ export TEST_CONFIG_PATH=tests/integration/test_config.yaml
 export COGNITE_CLIENT_NAME=cdf-s3-replicator-tests
 
 # Run integration tests
-poetry run pytest tests/integration/
+uv run pytest tests/integration/
 
 # Run specific integration test
-poetry run pytest tests/integration/test_data_modeling_integration.py
+uv run pytest tests/integration/test_data_modeling_integration.py
 ```
 
 #### Test Coverage Requirements
@@ -1017,16 +1017,16 @@ Unit tests cover individual modules without external connections.
 
 ```bash
 # Run all unit tests
-poetry run pytest tests/unit/ -v
+uv run pytest tests/unit/ -v
 
 # Run with coverage
-poetry run pytest tests/unit/ --cov=cdf_s3_replicator --cov-report=html
+uv run pytest tests/unit/ --cov=cdf_s3_replicator --cov-report=html
 
 # Run specific test module
-poetry run pytest tests/unit/test_data_modeling.py::TestDataModeling
+uv run pytest tests/unit/test_data_modeling.py::TestDataModeling
 
 # Run with markers
-poetry run pytest tests/unit/ -m "not slow"
+uv run pytest tests/unit/ -m "not slow"
 ```
 
 #### Writing Unit Tests
@@ -1085,7 +1085,7 @@ TEST_CONFIG_PATH=tests/integration/test_config.yaml
 EOF
 
 # Run integration tests
-poetry run pytest tests/integration/ --env-file .env.test
+uv run pytest tests/integration/ --env-file .env.test
 ```
 
 #### Writing Integration Tests
@@ -1202,16 +1202,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install uv
+        run: pip install uv
+
+      - name: Create venv
+        run: uv venv
+
       - name: Install dependencies
-        run: |
-          pip install poetry
-          poetry install
+        run: uv pip install -e ".[dev]"
 
-      - name: Run unit tests
-        run: poetry run pytest tests/unit/ --cov=cdf_s3_replicator
+      - name: Run unit tests with coverage
+        run: uv run coverage run --source cdf_s3_replicator -m pytest -v tests/unit
 
-      - name: Check coverage
-        run: poetry run coverage report --fail-under=60
+      - name: Generate coverage report
+        run: uv run coverage report --fail-under=60
 ```
 
 ## API Reference

@@ -56,7 +56,7 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 - Collect information about the bug:
   - Stack trace (Traceback)
   - OS, Platform and Version (Windows, Linux, macOS, x86, ARM)
-  - Version of the Python interpreter, Poetry, Visual Studio Code.
+  - Version of the Python interpreter, uv, Visual Studio Code.
   - Possibly your input and the output
   - Can you reliably reproduce the issue? And can you also reproduce it with older versions?
 
@@ -107,7 +107,7 @@ Refer to the [Readme](https://github.com/cognitedata/cdf-s3-replicator/blob/main
 - All new functionality is documented in the Readme
 - Run the pre-commit linter and ensure that all checks pass
   ```
-  poetry run pre-commit run --all
+  uv run pre-commit run --all
   ```
 - Try to keep test coverage above 90%. (see Readme for more information on Code Coverage)
 - Do not include "commented-out" code
