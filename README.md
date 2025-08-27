@@ -1,6 +1,6 @@
 # CDF S3 Replicator
 
-The **CDF S3 Data Modeling Replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to stream Data Modeling instances to **Amazon S3** in Delta Lake format, optimized for analytics and BI tools.
+The **CDF S3 Data Modeling Replicator** utilizes the **Cognite Data Fusion** (CDF) APIs to stream Data Modeling instances to **Amazon S3** in Delta Lake format, optimized for Tableau and BI tools.
 
 ## Table of Contents
 - [Overview](#overview)
