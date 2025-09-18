@@ -378,11 +378,12 @@ class DataModelingReplicator(Extractor):
         node_filter = Or(container_pred, view_pred)
         return Query(
             with_={
-                "nodes": NodeResultSetExpression(filter=node_filter, limit=2000, sync_mode="two_phase")
-            }, 
-            select={
-                "nodes": Select([SourceSelector(vid, props)])
-            })
+                "nodes": NodeResultSetExpression(
+                    filter=node_filter, limit=2000, sync_mode="two_phase"
+                )
+            },
+            select={"nodes": Select([SourceSelector(vid, props)])},
+        )
 
     def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
@@ -394,16 +395,24 @@ class DataModelingReplicator(Extractor):
             view_pred = HasData(views=[vid])
             node_filter = Or(container_pred, view_pred)
 
-            anchor = NodeResultSetExpression(filter=node_filter, limit=2000, sync_mode="two_phase")
+            anchor = NodeResultSetExpression(
+                filter=node_filter, limit=2000, sync_mode="two_phase"
+            )
 
             return Query(
                 with_={
                     "nodes": anchor,
                     "edges_out": EdgeResultSetExpression(
-                        from_="nodes", direction="outwards", limit=2000, sync_mode="two_phase"
+                        from_="nodes",
+                        direction="outwards",
+                        limit=2000,
+                        sync_mode="two_phase",
                     ),
                     "edges_in": EdgeResultSetExpression(
-                        from_="nodes", direction="inwards", limit=2000, sync_mode="two_phase"
+                        from_="nodes",
+                        direction="inwards",
+                        limit=2000,
+                        sync_mode="two_phase",
                     ),
                 },
                 select={
@@ -419,7 +428,7 @@ class DataModelingReplicator(Extractor):
                         {"space": vid.space, "externalId": vid.external_id},
                     ),
                     limit=2000,
-                    sync_mode="two_phase"
+                    sync_mode="two_phase",
                 )
             },
             select={"edges": Select([SourceSelector(vid, props)])},
