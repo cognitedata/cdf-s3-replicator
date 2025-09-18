@@ -376,9 +376,13 @@ class DataModelingReplicator(Extractor):
         )
 
         node_filter = Or(container_pred, view_pred)
-        with_ = {"nodes": NodeResultSetExpression(filter=node_filter, limit=2000, sync_mode="two_phase")}
-        select = {"nodes": Select([SourceSelector(vid, props)])}
-        return Query(with_=with_, select=select) # type: ignore
+        return Query(
+            with_={
+                "nodes": NodeResultSetExpression(filter=node_filter, limit=2000, sync_mode="two_phase")
+            }, 
+            select={
+                "nodes": Select([SourceSelector(vid, props)])
+            })
 
     def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
