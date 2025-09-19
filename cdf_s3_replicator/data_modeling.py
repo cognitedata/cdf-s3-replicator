@@ -29,7 +29,8 @@ from cognite.client.data_classes.data_modeling.query import (
 )
 from cognite.client.data_classes.filters import Equals, HasData, Or
 from cognite.client.exceptions import CogniteAPIError
-from cognite.extractorutils.base import CancellationToken, Extractor
+from cognite.extractorutils.base import Extractor
+from cognite.extractorutils.threading import CancellationToken
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import DeltaError
 import pyarrow.parquet as pq
@@ -43,6 +44,7 @@ from cdf_s3_replicator.extractor_config import CdfExtractorConfig
 from datetime import datetime, timedelta, timezone
 from itertools import chain
 import botocore.config as bc
+from botocore.client import BaseClient
 
 UTC = timezone.utc
 
@@ -63,7 +65,7 @@ class DataModelingReplicator(Extractor):
     state_store: Any
     cognite_client: Any
     s3_cfg: Optional[S3DestinationConfig]
-    _s3: Optional[boto3.client]
+    _s3: Optional[BaseClient]
     _s3_created_at: Optional[datetime]
     _model_xid: Optional[str]
     _model_version: Optional[str]
@@ -103,7 +105,7 @@ class DataModelingReplicator(Extractor):
             os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
         else:
             os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
-        self._s3: boto3.client | None = None
+        self._s3: BaseClient | None = None
         self._s3_created_at: datetime | None = None
         self._expected_node_props: set[str] | None = None
         self._view_props_by_xid: dict[tuple[str, str], set[str]] = {}
@@ -148,7 +150,7 @@ class DataModelingReplicator(Extractor):
         self.logger.info("Running in %s mode", "PROD" if is_prod else "DEV")
         return opts
 
-    def _make_s3_client(self) -> boto3.client:
+    def _make_s3_client(self) -> BaseClient:
         """Create a new S3 client using the default credential chain."""
         _RETRY_CFG = bc.Config(
             retries={"max_attempts": 10, "mode": "adaptive"},
@@ -374,9 +376,14 @@ class DataModelingReplicator(Extractor):
         )
 
         node_filter = Or(container_pred, view_pred)
-        with_ = {"nodes": NodeResultSetExpression(filter=node_filter, limit=2000)}
-        select = {"nodes": Select([SourceSelector(vid, props)])}
-        return Query(with_=with_, select=select)
+        return Query(
+            with_={
+                "nodes": NodeResultSetExpression(
+                    filter=node_filter, limit=2000, sync_mode="two_phase"
+                )
+            },
+            select={"nodes": Select([SourceSelector(vid, props)])},
+        )
 
     def _edge_query_for_view(self, view: dict[str, Any]) -> Query:
         vid = ViewId(view["space"], view["externalId"], view["version"])
@@ -388,16 +395,24 @@ class DataModelingReplicator(Extractor):
             view_pred = HasData(views=[vid])
             node_filter = Or(container_pred, view_pred)
 
-            anchor = NodeResultSetExpression(filter=node_filter, limit=2000)
+            anchor = NodeResultSetExpression(
+                filter=node_filter, limit=2000, sync_mode="two_phase"
+            )
 
             return Query(
                 with_={
                     "nodes": anchor,
                     "edges_out": EdgeResultSetExpression(
-                        from_="nodes", direction="outwards", limit=2000
+                        from_="nodes",
+                        direction="outwards",
+                        limit=2000,
+                        sync_mode="two_phase",
                     ),
                     "edges_in": EdgeResultSetExpression(
-                        from_="nodes", direction="inwards", limit=2000
+                        from_="nodes",
+                        direction="inwards",
+                        limit=2000,
+                        sync_mode="two_phase",
                     ),
                 },
                 select={
@@ -413,6 +428,7 @@ class DataModelingReplicator(Extractor):
                         {"space": vid.space, "externalId": vid.external_id},
                     ),
                     limit=2000,
+                    sync_mode="two_phase",
                 )
             },
             select={"edges": Select([SourceSelector(vid, props)])},
@@ -463,7 +479,7 @@ class DataModelingReplicator(Extractor):
                 self.state_store.set_state(external_id=state_id, high=None)
                 self.state_store.synchronize()
 
-                query.cursors = None
+                query.cursors = {}
 
                 try:
                     res = self._safe_sync(self.cognite_client, query)
@@ -490,7 +506,7 @@ class DataModelingReplicator(Extractor):
                         self.logger.warning(
                             f"Resetting cursors for {state_id} as last resort"
                         )
-                        query.cursors = None
+                        query.cursors = {}
                         self.state_store.set_state(external_id=state_id, high=None)
                         self.state_store.synchronize()
                         res = self._safe_sync(self.cognite_client, query)
@@ -1581,6 +1597,8 @@ class DataModelingReplicator(Extractor):
             return False
 
         try:
+            if not extraction_pipeline.external_id:
+                raise ValueError("Extraction pipeline has no external ID")
             new_config = CdfExtractorConfig.retrieve_pipeline_config(
                 config=self.config,
                 name=self.name,
