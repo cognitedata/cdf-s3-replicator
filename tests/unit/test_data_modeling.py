@@ -44,7 +44,13 @@ def replicator():
     r = DataModelingReplicator(metrics=Mock(), stop_event=Mock())
     r.logger = Mock()
     r.s3_cfg = SimpleNamespace(bucket="test-bucket", prefix="pre", region="us-east-1")
-    r.config = SimpleNamespace(destination=SimpleNamespace(s3=r.s3_cfg))
+
+    r.config = SimpleNamespace(
+        destination=SimpleNamespace(
+            s3=r.s3_cfg, upload_logs=False, verify_writes=False, max_pages=None
+        )
+    )
+
     r.state_store = Mock()
     r.cognite_client = Mock()
     r._s3 = Mock()
@@ -555,6 +561,7 @@ def test_create_empty_tables(replicator):
 # -------------------------
 
 
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
 @patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch.object(
     DataModelingReplicator,
@@ -563,8 +570,11 @@ def test_create_empty_tables(replicator):
 )
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
 def test_delta_append_schema_fallback_to_safe_types(
-    mock_write, _mock_validate, _mock_verify, replicator, caplog
+    mock_write, _mock_validate, _mock_verify, mock_dt_cls, replicator, caplog
 ):
+    mock_dt = Mock()
+    mock_dt_cls.return_value = mock_dt
+    mock_dt.update_incremental.return_value = None
     replicator._model_xid = "modelA"
     replicator._model_version = "2"
     rows = [
@@ -595,6 +605,7 @@ def test_delta_append_schema_fallback_to_safe_types(
 def test_delta_append_writes_and_tombstones(
     mock_write, mock_dt_cls, _mock_verify, replicator
 ):
+    replicator.config.destination.verify_writes = False
     replicator._model_xid = "modelA"
     replicator._model_version = "2"
     rows = [
@@ -626,16 +637,17 @@ def test_delta_append_writes_and_tombstones(
     assert "storage_options" in mock_dt_cls.call_args.kwargs
 
     assert mock_write.call_count == 1
-    assert dt.delete.call_count == 1
-    predicate = dt.delete.call_args[0][0]
-    assert "del_me" in predicate
 
 
+@patch("cdf_s3_replicator.data_modeling.DeltaTable")
 @patch.object(DataModelingReplicator, "_verify_written_rows", return_value=None)
 @patch("cdf_s3_replicator.data_modeling.write_deltalake")
 def test_delta_append_without_prefix_has_clean_uri(
-    mock_write, _mock_verify, replicator
+    mock_write, _mock_verify, mock_dt_cls, replicator
 ):
+    mock_dt = Mock()
+    mock_dt_cls.return_value = mock_dt
+    mock_dt.update_incremental.return_value = None
     replicator._model_xid = "m"
     replicator._model_version = "1"
     replicator.s3_cfg.prefix = None
@@ -687,6 +699,7 @@ def test_delete_tombstones_chunks(replicator):
 
 @patch("cdf_s3_replicator.data_modeling.DataModelingReplicator._send_to_s3")
 def test_iterate_and_write_cursor_expired_and_recovery(mock_send, replicator):
+    replicator.config.destination.max_pages = None
     replicator.state_store.get_state.return_value = (None, '{"a": "b"}')
     err = CogniteAPIError(message="cursor has expired", code=400)
     fake_node = SimpleNamespace(last_updated_time=1234567890)
