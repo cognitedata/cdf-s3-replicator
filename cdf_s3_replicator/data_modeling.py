@@ -1,12 +1,14 @@
 import json
 import logging
 import os
+import tempfile
 import time
 import boto3
 import sqlite3
 from contextlib import closing
 import random
 import pyarrow.dataset as ds
+import pyarrow.fs as fs
 from pathlib import Path
 import uuid
 from typing import Any, Dict, Optional, Union
@@ -31,7 +33,7 @@ from cognite.client.data_classes.filters import Equals, HasData, Or
 from cognite.client.exceptions import CogniteAPIError
 from cognite.extractorutils.base import Extractor
 from cognite.extractorutils.threading import CancellationToken
-from deltalake import DeltaTable, write_deltalake
+from deltalake import DeltaTable, write_deltalake  # type: ignore
 from deltalake.exceptions import DeltaError
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
@@ -93,7 +95,6 @@ class DataModelingReplicator(Extractor):
             config_file_path=override_config_path,
         )
         self.stop_event = stop_event
-        self.logger = logging.getLogger(self.name)
         logging.getLogger("botocore").setLevel(logging.WARNING)
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         self.s3_cfg = None
@@ -147,7 +148,7 @@ class DataModelingReplicator(Extractor):
                 opts["AWS_ACCESS_KEY_ID"] = akid
                 opts["AWS_SECRET_ACCESS_KEY"] = skey
 
-        self.logger.info("Running in %s mode", "PROD" if is_prod else "DEV")
+        self.logger.debug("Running in %s mode", "PROD" if is_prod else "DEV")
         return opts
 
     def _make_s3_client(self) -> BaseClient:
@@ -206,6 +207,7 @@ class DataModelingReplicator(Extractor):
             )
         )
 
+        self.logger.info(f"Run started with snapshot interval {snapshot_interval}")
         try:
             extraction_pipeline = self.config.cognite.get_extraction_pipeline(
                 self.cognite_client
@@ -218,28 +220,60 @@ class DataModelingReplicator(Extractor):
             return
 
         while not self.stop_event.is_set():
-            t0 = time.time()
+            start_ts = datetime.now(tz=UTC)
+            log_file_name = os.path.join(
+                tempfile.gettempdir(),
+                f'replicator_{start_ts.strftime("%Y-%m-%d_%H_%M_%S")}.log',
+            )
+            lfh = logging.FileHandler(log_file_name)
+            lfh.formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(message)s")
+            try:
+                self.logger.addHandler(lfh)
+                t0 = time.time()
+
+                try:
+                    remote_config = self._reload_remote_config()
+                    if remote_config:
+                        self.logger.info(
+                            "Configuration reloaded - processing with updated config"
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error during config reload: {e}")
+
+                self.logger.info("Starting process spaces")
+                self.process_spaces()
+
+                if t0 - last_snapshot_time >= snapshot_interval:
+                    for dm_cfg in cfg.data_modeling:
+                        try:
+                            self.logger.info("Publishing space snaphsots")
+                            self._publish_space_snapshots(dm_cfg)
+                        except Exception as err:
+                            self.logger.exception(
+                                "Snapshot publish failed for %s: %s", dm_cfg.space, err
+                            )
+                    last_snapshot_time = t0
+
+                self.logger.info("Process spaces completed")
+            except Exception as e:
+                self.logger.error(f"Exception caught processing spaces: {e}")
+                raise e
+            finally:
+                lfh.close()
+                self.logger.removeHandler(lfh)
 
             try:
-                remote_config = self._reload_remote_config()
-                if remote_config:
-                    self.logger.info(
-                        "Configuration reloaded - processing with updated config"
+                if self.config.destination and self.config.destination.upload_logs:
+                    log_file_path = f'{self.s3_cfg.prefix}logs/replicator/{start_ts.strftime("%Y-%m-%d/%H_%M_%S")}.log'
+                    self.logger.info(f"Uploading log file to {log_file_path}")
+                    self._ensure_s3()
+                    assert self._s3 is not None
+                    self._s3.upload_file(
+                        log_file_name, self.s3_cfg.bucket, log_file_path
                     )
+                os.remove(log_file_name)
             except Exception as e:
-                self.logger.error(f"Error during config reload: {e}")
-
-            self.process_spaces()
-
-            if t0 - last_snapshot_time >= snapshot_interval:
-                for dm_cfg in cfg.data_modeling:
-                    try:
-                        self._publish_space_snapshots(dm_cfg)
-                    except Exception as err:
-                        self.logger.exception(
-                            "Snapshot publish failed for %s: %s", dm_cfg.space, err
-                        )
-                last_snapshot_time = t0
+                self.logger.error(f"Error uploading log file {e}")
 
             delay = max(cfg.extractor.poll_time - (time.time() - t0), 0)
             if delay:
@@ -287,6 +321,9 @@ class DataModelingReplicator(Extractor):
 
                         for view in selected_views:
                             try:
+                                self.logger.info(
+                                    f"Replicating view {view.external_id}/{view.version}"
+                                )
                                 self.replicate_view(
                                     dm_cfg,
                                     model.external_id,
@@ -532,6 +569,16 @@ class DataModelingReplicator(Extractor):
             len(res.data.get(k, [])) > 0
             for k in ("nodes", "edges", "edges_out", "edges_in")
         ):
+            if (
+                self.config.destination
+                and self.config.destination.max_pages
+                and page_count > self.config.destination.max_pages
+            ):
+                self.logger.info(
+                    f"Short-circuiting {state_id} on page {page_count} - max number of pages exceeded"
+                )
+                break
+
             if self._page_contains_future_change(res, query_start_ms):
                 self.logger.info(
                     f"Short-circuiting {state_id} on page {page_count} – instance updated after paging started"
@@ -748,6 +795,7 @@ class DataModelingReplicator(Extractor):
                     view_map["_edges"] = {"version": None, "is_edge": True}
                     for xid, meta in view_map.items():
                         try:
+                            self.logger.info(f"Writing view snapshot for {xid}")
                             self._write_view_snapshot(dm_space, xid, meta["is_edge"])
                         except Exception as exc:
                             version_info = (
@@ -950,6 +998,12 @@ class DataModelingReplicator(Extractor):
                 else self._create_empty_edges_table()
             )
 
+            if edge_tbl.num_rows > 0 and "deletedTime" in edge_tbl.column_names:
+                edge_tbl = edge_tbl.filter(pc.is_null(edge_tbl["deletedTime"]))
+                self.logger.info(
+                    f"Filtered deleted edges for {view_xid}, {edge_tbl.num_rows} rows remain"
+                )
+
             tmp_edge = f"{pub_dir}edges{temp_suffix}.parquet"
             fin_edge = f"{pub_dir}edges.parquet"
             pq.write_table(edge_tbl, tmp_edge, compression="snappy")
@@ -958,22 +1012,127 @@ class DataModelingReplicator(Extractor):
             if not is_edge_only:
                 node_raw = f"{self._raw_prefix(dm_space)}/views/{view_xid}/nodes"
                 expected = self._view_props_by_xid.get((dm_space, view_xid), set())
+                bucket, prefix = node_raw[5:].split("/", 1)
+
                 try:
-                    if DeltaTable(
-                        node_raw, storage_options=self._s3_storage_options()
-                    ).files():
-                        node_tbl = self._dedup_latest_nodes(node_raw)
-                    else:
+                    storage_opts = self._s3_storage_options()
+                    node_tbl = None
+
+                    try:
+                        if storage_opts:
+                            s3fs = fs.S3FileSystem(
+                                access_key=storage_opts.get("AWS_ACCESS_KEY_ID"),
+                                secret_key=storage_opts.get("AWS_SECRET_ACCESS_KEY"),
+                                region=storage_opts.get("AWS_REGION", "us-east-1"),
+                            )
+                        else:
+                            s3fs = fs.S3FileSystem()
+
+                        s3_path_for_arrow = f"{bucket}/{prefix}"
+                        dataset = ds.dataset(
+                            s3_path_for_arrow, format="parquet", filesystem=s3fs
+                        )
+                        node_tbl = dataset.to_table()
+
+                        # Manual dedup since we bypassed Delta
+                        if node_tbl.num_rows > 0:
+                            node_tbl = node_tbl.sort_by(
+                                [
+                                    ("space", "ascending"),
+                                    ("externalId", "ascending"),
+                                    ("lastUpdatedTime", "descending"),
+                                ]
+                            )
+                            seen = set()
+                            keep_indices = []
+                            for i in range(node_tbl.num_rows):
+                                key = (
+                                    node_tbl["space"][i].as_py(),
+                                    node_tbl["externalId"][i].as_py(),
+                                )
+                                if key not in seen:
+                                    seen.add(key)
+                                    keep_indices.append(i)
+
+                            node_tbl = node_tbl.take(keep_indices)
+
+                    except Exception as parquet_err:
+                        self.logger.warning(
+                            f"Direct Parquet read failed: {parquet_err}"
+                        )
+                        node_tbl = None
+
+                    # Strategy 2: Fall back to Delta with retries if direct read failed
+                    if node_tbl is None:
+                        max_attempts = 5
+                        wait_seconds = 3
+                        files = []
+
+                        for attempt in range(max_attempts):
+                            try:
+                                dt = DeltaTable(node_raw, storage_options=storage_opts)
+                                dt.update_incremental()
+                                files = dt.files()
+
+                                if files:
+                                    self.logger.info(
+                                        f"[SUCCESS] Delta table for {view_xid} has {len(files)} data files (attempt {attempt + 1})"
+                                    )
+                                    break
+                            except Exception as dt_err:
+                                self.logger.warning(
+                                    f"Delta table load attempt {attempt + 1} failed: {dt_err}"
+                                )
+                                files = []
+
+                            if attempt < max_attempts - 1:
+                                self.logger.warning(
+                                    f"Attempt {attempt + 1}/{max_attempts}: RAW table for {view_xid} has no files yet. "
+                                    f"Waiting {wait_seconds}s for S3 consistency..."
+                                )
+                                time.sleep(wait_seconds)
+
+                        if files:
+                            self.logger.info(
+                                f"Deduplicating {len(files)} files for {view_xid}"
+                            )
+                            node_tbl = self._dedup_latest_nodes(node_raw)
+                            self.logger.info(
+                                f"[SUCCESS] Deduplicated to {node_tbl.num_rows} rows"
+                            )
+                        else:
+                            self.logger.error(
+                                f"[FAILED] Delta table for {view_xid} still has no data files after {max_attempts} attempts! "
+                                "Creating empty table."
+                            )
+                            node_tbl = self._create_empty_nodes_table()
+
+                    # If still no table, create empty
+                    if node_tbl is None:
                         node_tbl = self._create_empty_nodes_table()
 
                     node_tbl = self._widen_with_props(node_tbl, expected)
+                    if node_tbl.num_rows > 0 and "deletedTime" in node_tbl.column_names:
+                        node_tbl = node_tbl.filter(pc.is_null(node_tbl["deletedTime"]))
+                        self.logger.info(
+                            f"Filtered deleted nodes for {view_xid}, {node_tbl.num_rows} remain"
+                        )
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
                     pq.write_table(node_tbl, temp_node_path, compression="snappy")
                     files_to_update.append((temp_node_path, final_node_path, "nodes"))
-                except (FileNotFoundError, DeltaError):
+
+                except (FileNotFoundError, DeltaError) as e:
+                    self.logger.warning(f"RAW table not found for {view_xid}: {e}")
                     empty_node_tbl = self._create_empty_nodes_table()
                     empty_node_tbl = self._widen_with_props(empty_node_tbl, expected)
+                    if (
+                        empty_node_tbl.num_rows > 0
+                        and "deletedTime" in empty_node_tbl.column_names
+                    ):
+                        empty_node_tbl = empty_node_tbl.filter(
+                            pc.is_null(empty_node_tbl["deletedTime"])
+                        )
                     temp_node_path = f"{pub_dir}nodes{temp_suffix}.parquet"
                     final_node_path = f"{pub_dir}nodes.parquet"
                     pq.write_table(empty_node_tbl, temp_node_path, compression="snappy")
@@ -984,7 +1143,9 @@ class DataModelingReplicator(Extractor):
             else:
                 self.logger.warning("No data files created for %s", view_xid)
         except Exception as e:
-            self.logger.error("Snapshot creation failed for %s: %s", view_xid, e)
+            self.logger.error(
+                "Snapshot creation failed for %s: %s", view_xid, e, exc_info=True
+            )
             self._cleanup_temp_files(pub_dir, temp_suffix)
             raise
 
@@ -1082,7 +1243,8 @@ class DataModelingReplicator(Extractor):
                 try:
                     temp_bucket, temp_key = temp_path[5:].split("/", 1)
                     self._s3.delete_object(Bucket=temp_bucket, Key=temp_key)
-                except Exception:
+                except Exception as e:
+                    self.logger.error("Failed during cleanup of temp files: %s", e)
                     pass
 
     def _cleanup_temp_files(self, pub_dir: str, temp_suffix: str) -> None:
@@ -1159,6 +1321,7 @@ class DataModelingReplicator(Extractor):
         Used during sync to continuously update raw Delta tables.
         """
         for tbl_name, rows in self._extract_instances(result).items():
+            self.logger.debug(f"Delta append table {tbl_name}")
             self._delta_append(tbl_name, rows, data_model_config.space)
 
     def _send_to_local(
@@ -1521,6 +1684,7 @@ class DataModelingReplicator(Extractor):
         Uses explicit data model version in the S3 path structure.
         """
         if not rows:
+            self.logger.info(f"No rows to write for {table}")
             return
 
         rows = self._sanitize_rows_for_tableau(rows)
@@ -1546,6 +1710,7 @@ class DataModelingReplicator(Extractor):
             arrow_table = pa.Table.from_pylist(rows)
             arrow_table = self._coerce_nulltype_fields_to_string(arrow_table)
             arrow_table = self._align_to_existing_schema(s3_uri, arrow_table)
+
             self._validate_tableau_schema(arrow_table.schema, table)
         except Exception as schema_error:
             self.logger.warning(
@@ -1556,6 +1721,10 @@ class DataModelingReplicator(Extractor):
         if arrow_table is None:
             raise RuntimeError(f"All schema approaches failed for {table}")
 
+        if arrow_table.num_rows == 0:
+            self.logger.warning(f"Arrow table has 0 rows after processing for {table}!")
+            return
+
         try:
             write_deltalake(
                 s3_uri,
@@ -1564,16 +1733,22 @@ class DataModelingReplicator(Extractor):
                 schema_mode="merge",
                 storage_options=storage_options,
             )
-            sample_rows = random.sample(rows, min(len(rows), 50))
-            self._verify_written_rows(s3_uri, sample_rows, storage_options)
-            tombstones = [r["externalId"] for r in rows if r.get("deletedTime")]
-            if tombstones:
-                dt = DeltaTable(
-                    s3_uri,
-                    storage_options=storage_options,
+
+            dt = DeltaTable(s3_uri, storage_options=storage_options)
+            dt.update_incremental()
+
+            # Verification uses PyArrow Dataset filtering to only read matching rows,
+            # making it O(1) per page (samples 50 rows). Efficient enough for production use.
+            if self.config.destination and self.config.destination.verify_writes:
+                sample_rows = random.sample(rows, min(len(rows), 50))
+                self._verify_written_rows(s3_uri, sample_rows, storage_options)
+
+            tombstones_count = sum(1 for r in rows if r.get("deletedTime"))
+            if tombstones_count:
+                self.logger.info(
+                    f"Wrote {len(rows)} rows including {tombstones_count} tombstones (kept in RAW for history)"
                 )
 
-                self._delete_tombstones(dt, tombstones)
         except DeltaError as err:
             self.logger.error("Delta write failed: %s", err)
             raise

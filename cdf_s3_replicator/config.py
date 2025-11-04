@@ -46,6 +46,9 @@ class S3DestinationConfig:
 @dataclass
 class DestinationConfig:
     s3: Optional[S3DestinationConfig] = None
+    upload_logs: Optional[bool] = False
+    verify_writes: Optional[bool] = True
+    max_pages: Optional[int] = None
 
 
 @dataclass
